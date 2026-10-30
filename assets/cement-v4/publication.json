@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "scope": "synthetic_software_demonstration_not_factory_validation",
+  "source_software_commit": "9805c5423bf8f201c9df72ec020d1696c5a1ae35",
+  "files": {
+    "cement-closed-loop.mp4": {
+      "bytes": 37857076,
+      "sha256": "9a09921d060170822e30ca713358d2d712128bf0ed83aa75367f13fadeb93203"
+    },
+    "cement-closed-loop.zh-TW.srt": {
+      "bytes": 11435,
+      "sha256": "18d9ffb4118e8287097206c425a05e157d45a88e0d19e3f8e4325076207b4da8"
+    },
+    "chapters.json": {
+      "bytes": 2064,
+      "sha256": "8b367c34c10c091e87fa045f8cb5adaa715b5766f94efc6e59319d00ea9a700f"
+    },
+    "edit-decision-list.json": {
+      "bytes": 126860,
+      "sha256": "a5f00dd89668aaccc2f6ebb9d0f6ce0dd8afdd0bf36f4da2cd9627bf292257cd"
+    }
+  },
+  "video": {
+    "duration_seconds": 728.3,
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "video_codec": "H.264",
+    "audio_codec": "AAC",
+    "captions": "121 Traditional Chinese cues, also burned into video",
+    "chapters": 16,
+    "editing": "Cuts and frozen original React footage are explicitly marked; media duration is not wall-clock control evidence."
+  },
+  "source_paths": "Paths in edit-decision-list.json identify original local production artifacts, not files included in this repository.",
+  "voice": {
+    "name": "zh_CN-chaowen-medium",
+    "engine": "piper-tts 1.8.0",
+    "generated_narration": true,
+    "model_sha256": "820d64ac16048fbcf38dd0823d37fab5f5e0c2bd71b01ca5a50f553fac19e746",
+    "config_sha256": "a6bb2caafa0645642f13cbf7e2f6fbbb16fded66e51109fc26d622f6472fa16f",
+    "model_card": "https://huggingface.co/rhasspy/piper-voices/raw/main/zh/zh_CN/chaowen/medium/MODEL_CARD",
+    "dataset_attribution": "Chaowen; Open Home Foundation / Nabu Casa voice-datasets",
+    "dataset_source": "https://github.com/OHF-Voice/voice-datasets",
+    "dataset_license_declaration": "CC0",
+    "training_base": "Xiao Ya, medium",
+    "training_base_model_card": "https://huggingface.co/rhasspy/piper-voices/raw/main/zh/zh_CN/xiao_ya/medium/MODEL_CARD",
+    "training_base_dataset_license_declaration": "Non-commercial use",
+    "training_base_dataset_source": "https://www.data-baker.com/data/index/TNtts/",
+    "use_notice": "This video is provided for non-commercial technical demonstration. The project Apache-2.0 code license is not a grant of third-party voice rights. No commercial voice clearance is asserted; confirm applicable upstream terms before commercial use or redistribution.",
+    "voice_models_or_training_data_redistributed": false
+  }
+}

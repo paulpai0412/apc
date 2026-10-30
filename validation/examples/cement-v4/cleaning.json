@@ -1,0 +1,80 @@
+{
+  "time_column": "time_seconds",
+  "time_format": "seconds",
+  "sample_time": 60.0,
+  "train_end": 2678400.0,
+  "validation_end": 5097600.0,
+  "duplicate_policy": "last",
+  "missing_policy": "forward_fill",
+  "max_gap_seconds": 120.0,
+  "outlier_policy": "none",
+  "sigma": 4.0,
+  "signals": [
+    {
+      "column": "ProductFineness",
+      "name": "ProductFineness",
+      "role": "cv",
+      "unit": "m2/kg",
+      "scale": 1.0,
+      "offset": 0.0,
+      "quality_column": "quality",
+      "min": 330.0,
+      "max": 390.0
+    },
+    {
+      "column": "MillDifferentialPressure",
+      "name": "MillDifferentialPressure",
+      "role": "cv",
+      "unit": "mbar",
+      "scale": 1.0,
+      "offset": 0.0,
+      "quality_column": "quality",
+      "min": 28.0,
+      "max": 52.0
+    },
+    {
+      "column": "FreshFeed",
+      "name": "FreshFeed",
+      "role": "mv",
+      "unit": "t/h",
+      "scale": 1.0,
+      "offset": 0.0,
+      "quality_column": "quality",
+      "min": 80.0,
+      "max": 120.0
+    },
+    {
+      "column": "SeparatorSpeed",
+      "name": "SeparatorSpeed",
+      "role": "mv",
+      "unit": "rpm",
+      "scale": 1.0,
+      "offset": 0.0,
+      "quality_column": "quality",
+      "min": 800.0,
+      "max": 1000.0
+    },
+    {
+      "column": "ClinkerHardness",
+      "name": "ClinkerHardness",
+      "role": "dv",
+      "unit": "kWh/t",
+      "scale": 1.0,
+      "offset": 0.0,
+      "quality_column": "quality",
+      "min": 10.0,
+      "max": 18.0
+    },
+    {
+      "column": "FeedMoisture",
+      "name": "FeedMoisture",
+      "role": "dv",
+      "unit": "%",
+      "scale": 1.0,
+      "offset": 0.0,
+      "quality_column": "quality",
+      "min": 0.2,
+      "max": 2.2
+    }
+  ]
+}

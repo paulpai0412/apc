@@ -4,6 +4,36 @@ Advanced Process Control in Rust over OPC UA.
 
 AuTHRity is an industrial Advanced Process Control (APC) platform for deploying and operating DMC/MPC controllers against live plant tags through OPC UA. It is designed for the full controller lifecycle: model creation, simulation, deployment, supervision, and operator visibility.
 
+## 本機水泥磨工作區：新手入口
+
+先閱讀 [繁體中文新手操作手冊](START_HERE.zh-TW.html)。下載後以瀏覽器開啟這個單一 HTML，即可離線查看啟動方式、系統流程、M1–M9／R1–R7 功能、逐步 SOP、安全停止、問題處理及管理者重建程序；不需要啟動文件伺服器。
+
+- 已準備的本機研究入口：<http://127.0.0.1:43180/>。
+- 已準備的本機 Runtime 入口：<http://127.0.0.1:43181/>。
+- 網址可以開啟就直接使用，不重複啟動。找不到工作區或剛從 GitHub 下載時，先由管理者依手冊準備環境；Git repo 不包含本機二進位、資料庫、憑證或帳密。
+
+這是隔離合成水泥磨的操作指南，不是工廠投運授權。下方通用開發說明及歷史畫面不取代此工作區的入口、權限與安全 SOP。
+
+### 隨 repo 提供的 cement-v4 合成資料與操作影片
+
+下載整份 repo 後，直接用瀏覽器開啟 `START_HERE.zh-TW.html`。GitHub 的檔案頁不會執行 HTML；影片若不能預覽，請使用 **Download raw file** 下載後播放。不需要 Git LFS。
+
+| 內容 | 位置與用途 |
+|---|---|
+| 完整合成資料 | [`validation/examples/cement-v4/`](validation/examples/cement-v4/)：原工作區 `data/` 的七個檔案，保留原始 bytes。 |
+| 原始 CSV | [`cement-2026-q1-raw.csv`](validation/examples/cement-v4/cement-2026-q1-raw.csv)：2026 年第一季、60 秒採樣、129,601 列；包含明示的重複、亂序、品質不良及缺值，供清洗 SOP 使用。 |
+| 清洗及工程範本 | [`cleaning.json`](validation/examples/cement-v4/cleaning.json)、[`campaign.json`](validation/examples/cement-v4/campaign.json)、[`plant.json`](validation/examples/cement-v4/plant.json)。 |
+| 原生歷史及情境 | [`native-history.json`](validation/examples/cement-v4/native-history.json)、[`scenario.json`](validation/examples/cement-v4/scenario.json)：各 129,600 個採樣時刻。 |
+| 資料來源與 SHA-256 | [`provenance.json`](validation/examples/cement-v4/provenance.json)：六個資料／設定檔的原始雜湊與刻意加入的資料缺陷。 |
+| 操作影片 | [`cement-closed-loop.mp4`](assets/cement-v4/cement-closed-loop.mp4)：12 分 08.3 秒、1080p、中文合成配音、燒錄繁體字幕、16 章節。 |
+| 影片配套 | [SRT 字幕](assets/cement-v4/cement-closed-loop.zh-TW.srt)、[章節時間](assets/cement-v4/chapters.json)、[剪接來源索引](assets/cement-v4/edit-decision-list.json)、[檔案雜湊與聲音來源](assets/cement-v4/publication.json)。 |
+
+這些是隔離合成製程資料與原 React 實錄，不是工廠數據或投運證明。CSV 可直接依手冊 M2 匯入；這些檔案不是可直接 `start` 的完整工作區。`cleaning.json` 的最大補值缺口為 120 秒，影片所展示的清洗版本為 180 秒，兩者不可混稱為同一設定。
+
+影片中的等待剪接及停格均有標示，不等於真實控制週期。剪接索引內的絕對路徑是製作當時的本機來源記錄；原始錄影、運行回條、資料庫與帳密未上傳。
+
+**影片配音使用範圍另列：**影片僅作非商業技術展示。聲音由 Piper 的 `zh_CN-chaowen-medium` 合成，非真人配音。[Chaowen 模型卡](https://huggingface.co/rhasspy/piper-voices/raw/main/zh/zh_CN/chaowen/medium/MODEL_CARD) 列資料集為 CC0，來源為 [Open Home Foundation／Nabu Casa voice-datasets](https://github.com/OHF-Voice/voice-datasets)，並註明微調自 [Xiao Ya](https://huggingface.co/rhasspy/piper-voices/raw/main/zh/zh_CN/xiao_ya/medium/MODEL_CARD)，後者標示資料集限非商業使用。專案程式碼的 Apache-2.0 授權不代表已取得第三方聲音的商用權利；商用或再散布前須另確認適用條款。本 repo 不散布語音模型或其訓練資料。
+
 ## Quick Overview
 
 This system provides a practical path from model to closed-loop execution:

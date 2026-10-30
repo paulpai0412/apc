@@ -1,1 +1,5 @@
 hmi/frontend/** linguist-vendored=true
+
+# Preserve published artifact hashes across Windows and Unix checkouts.
+/validation/examples/cement-v4/* -text
+/assets/cement-v4/* -text

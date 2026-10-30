@@ -1,0 +1,93 @@
+{
+  "sample_time": 60.0,
+  "baseline_cv": [
+    360.0,
+    40.0
+  ],
+  "baseline_mv": [
+    100.0,
+    900.0
+  ],
+  "baseline_dv": [
+    14.0,
+    1.2
+  ],
+  "actuator_tau": [
+    90.0,
+    60.0
+  ],
+  "actuator_low": [
+    80.0,
+    800.0
+  ],
+  "actuator_high": [
+    120.0,
+    1000.0
+  ],
+  "actuator_rate": [
+    0.025,
+    0.13333333333333333
+  ],
+  "paths": [
+    [
+      {
+        "gain": -1.2,
+        "tau1": 180.0,
+        "tau2": 120.0,
+        "delay_seconds": 120.0
+      },
+      {
+        "gain": 0.25,
+        "tau1": 120.0,
+        "tau2": 90.0,
+        "delay_seconds": 60.0
+      },
+      {
+        "gain": -3.5,
+        "tau1": 240.0,
+        "tau2": 120.0,
+        "delay_seconds": 120.0
+      },
+      {
+        "gain": -5.0,
+        "tau1": 180.0,
+        "tau2": 120.0,
+        "delay_seconds": 60.0
+      }
+    ],
+    [
+      {
+        "gain": 0.45,
+        "tau1": 180.0,
+        "tau2": 90.0,
+        "delay_seconds": 60.0
+      },
+      {
+        "gain": 0.035,
+        "tau1": 120.0,
+        "tau2": 60.0,
+        "delay_seconds": 60.0
+      },
+      {
+        "gain": 1.3,
+        "tau1": 180.0,
+        "tau2": 120.0,
+        "delay_seconds": 60.0
+      },
+      {
+        "gain": 3.0,
+        "tau1": 240.0,
+        "tau2": 120.0,
+        "delay_seconds": 120.0
+      }
+    ]
+  ],
+  "nonlinear_strength": [
+    0.02,
+    0.02
+  ],
+  "nonlinear_scale": [
+    25.0,
+    10.0
+  ]
+}

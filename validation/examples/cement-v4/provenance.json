@@ -1,0 +1,29 @@
+{
+  "scope": "synthetic_software_acceptance_not_factory_validation",
+  "source": "current_native_replay_independent_declared_cement_plant",
+  "native_samples": 129600,
+  "raw_rows": 129601,
+  "start": "2026-01-01T00:00:00Z",
+  "months": 3,
+  "sample_time": 60,
+  "excitation": "seeded_exogenous_PRBS_ramps_and_regimes_from_frozen_campaign",
+  "mv_coordinate": "command_mv_pid_setpoint_not_actuator_output",
+  "defects": {
+    "bad_quality_sample": 120,
+    "missing_cv_sample": 180,
+    "swapped_samples": [
+      250,
+      251
+    ],
+    "duplicate_sample": 300
+  },
+  "binary_sha256": "814f6849972c87799b69178afe6d37a467894137f2b70ec01bb2241f8bb5bd39",
+  "files": {
+    "campaign.json": "8bee33c7cd0ffcb8f2196cb440844659ba89b6d33cd11dd512baf8a5ac7ad668",
+    "cleaning.json": "671aff17e16444d9f3bf28c11fe321b23d437f4ed9a666895f879094a922c3f5",
+    "cement-2026-q1-raw.csv": "8638bc6e8ef800233586575e2b50bd860ada607db3e0bdd12bfbb4bde0716e95",
+    "native-history.json": "05850fe5096a88fae89550c53c710ff5d8a5a8a13a77ddc28003f1f4616c809b",
+    "scenario.json": "f0e8542ac73005c7f5eab362b24baa1ab3211898481710a182cf6d77c9f1b22f",
+    "plant.json": "533865ecdb61369e1b44670279a0b0c3cad54aec287a3041b54594e0c563ed00"
+  }
+}
