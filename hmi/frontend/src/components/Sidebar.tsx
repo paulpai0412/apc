@@ -1,179 +1,46 @@
-import { Activity, Cpu, Layers, Settings } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from 'react';
+import { Activity, Menu, X } from 'lucide-react';
+import type { WorkspaceMode, WorkspacePage } from '../types/Workspace';
 
 interface SidebarProps {
-    activeModel: string;
-    onSelect: (model: string) => void;
-    allowGenerator: boolean;
-    allowSettings: boolean;
-    username: string;
-    role: string;
-    onChangePassword: () => void;
-    onLogout: () => void;
+  mode: WorkspaceMode;
+  pages: readonly WorkspacePage[];
+  activePage: string;
+  onSelect: (page: string) => void;
+  username: string;
+  role: string;
+  onChangePassword: () => void;
+  onLogout: () => void;
 }
 
-
-export const Sidebar = ({ activeModel, onSelect, allowGenerator, allowSettings, username, role, onChangePassword, onLogout }: SidebarProps) => {
-    const [modelList, setModelList] = useState<string[]>([]);
-    const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-    const accountMenuRef = useRef<HTMLDivElement | null>(null);
-
-    useEffect(() => {
-        // Fetch list of available models from Backend
-        fetch('/api/models')
-            .then(res => res.json())
-            .then(data => setModelList(data))
-            .catch(err => console.error("Failed to load model list", err));
-    }, []);
-
-    useEffect(() => {
-        if (!accountMenuOpen) return;
-        const onMouseDown = (event: MouseEvent) => {
-            if (!accountMenuRef.current?.contains(event.target as Node)) {
-                setAccountMenuOpen(false);
-            }
-        };
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') {
-                setAccountMenuOpen(false);
-            }
-        };
-        document.addEventListener('mousedown', onMouseDown);
-        document.addEventListener('keydown', onKeyDown);
-        return () => {
-            document.removeEventListener('mousedown', onMouseDown);
-            document.removeEventListener('keydown', onKeyDown);
-        };
-    }, [accountMenuOpen]);
-
-    const handleChangePassword = () => {
-        setAccountMenuOpen(false);
-        onChangePassword();
-    };
-
-    const handleLogout = () => {
-        setAccountMenuOpen(false);
-        onLogout();
-    };
-
-    return (
-        <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col h-screen shrink-0">
-            {/* Logo Area */}
-            <div className="h-16 flex items-center gap-3 px-6 border-b border-slate-800 bg-slate-950">
-                <div className="p-2 bg-indigo-600 rounded-lg">
-                    <Activity size={20} className="text-white" />
-                </div>
-                <h1 className="font-bold text-lg tracking-wider text-slate-100">AuTHRity</h1>
-            </div>
-
-            {/* Menu */}
-            <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
-                <button 
-                    onClick={() => onSelect("Plant Overview")}
-                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 mb-4
-                    ${activeModel === "Plant Overview" 
-                        ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/20" 
-                        : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                    }`}
-                >
-                    <Layers size={18} />
-                    Plant Overview
-                </button>
-
-                <div className="text-xs font-bold text-slate-500 uppercase px-3 mb-2">Controllers</div>
-                
-                {/* DYNAMIC MODEL LIST */}
-                {modelList.map((modelName) => (
-                    <button 
-                        key={modelName}
-                        onClick={() => onSelect(modelName)}
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200
-                        ${activeModel === modelName 
-                            ? "bg-indigo-600/10 text-indigo-400 border border-indigo-600/20 shadow-[0_0_15px_rgba(79,70,229,0.1)]" 
-                            : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
-                        }`}
-                    >
-                        <Cpu size={18} />
-                        {modelName}
-                    </button>
-                ))}
-
-                <div className="my-4 border-b border-slate-800"></div>
-
-                <div className="text-xs font-bold text-slate-500 uppercase px-3 mb-2">Tools</div>
-                
-                {allowGenerator && (
-                    <button 
-                        onClick={() => onSelect("Generator")}
-                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200
-                        ${activeModel === "Generator" 
-                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
-                            : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
-                        }`}
-                    >
-                        <Layers size={18} />
-                        Generator
-                    </button>
-                )}
-            </nav>
-
-            {/* Footer */}
-            <div className="p-4 border-t border-slate-800 bg-slate-950 space-y-2">
-                {allowSettings && (
-                    <button 
-                        onClick={() => onSelect("Settings")}
-                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-bold transition-all duration-200
-                        ${activeModel === "Settings" 
-                            ? "bg-slate-800 text-white" 
-                            : "text-slate-500 hover:bg-slate-900 hover:text-slate-300"
-                        }`}
-                    >
-                        <Settings size={18} />
-                        Settings
-                    </button>
-                )}
-                
-                <div className="flex items-center gap-3 text-slate-400 text-sm px-2 pt-2 border-t border-slate-900">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                    <span>System Online</span>
-                </div>
-
-                <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 p-2 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                        <div className="text-slate-500">Logged in as</div>
-                        <div className="relative" ref={accountMenuRef}>
-                            <button
-                                onClick={() => setAccountMenuOpen(open => !open)}
-                                className="inline-flex items-center justify-center rounded p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800"
-                                title="Account settings"
-                                aria-label="Account settings"
-                            >
-                                <Settings size={14} />
-                            </button>
-                            {accountMenuOpen && (
-                                <div className="absolute right-0 bottom-full mb-1 w-36 rounded border border-slate-700 bg-slate-900 shadow-lg z-20">
-                                    <button
-                                        onClick={handleChangePassword}
-                                        className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-800"
-                                    >
-                                        Change password
-                                    </button>
-                                    <button
-                                        onClick={handleLogout}
-                                        className="w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-800"
-                                    >
-                                        Logout
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                    <div className="mt-0.5 flex items-center justify-between gap-2">
-                        <div className="text-slate-200 font-bold truncate">{username}</div>
-                        <div className="text-indigo-400 uppercase tracking-wider shrink-0">{role}</div>
-                    </div>
-                </div>
-            </div>
-        </aside>
-    );
-};
+export function Sidebar({ mode, pages, activePage, onSelect, username, role, onChangePassword, onLogout }: SidebarProps) {
+  const drawer = useRef<HTMLDialogElement>(null);
+  const opener = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 768px)');
+    const closeOnDesktop = () => { if (media.matches) drawer.current?.close(); };
+    media.addEventListener('change', closeOnDesktop);
+    return () => media.removeEventListener('change', closeOnDesktop);
+  }, []);
+  function close() { drawer.current?.close(); opener.current?.focus(); }
+  function select(page: string) { onSelect(page); close(); }
+  const contents = <>
+    <div className="flex items-center gap-3 border-b border-slate-800 px-4 py-4"><Activity size={22} className="text-indigo-400" /><span className="text-lg font-bold">AuTHRity</span><span className="ml-auto text-xs text-slate-400">水泥磨</span></div>
+    <div className="px-4 pb-2 pt-4 text-xs font-semibold text-slate-400">{mode === 'runtime' ? 'RUNTIME · 現場運行' : 'MODELING · 隔離建模'}</div>
+    <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-4" aria-label={mode === 'runtime' ? 'Runtime 功能頁面' : '建模功能頁面'}>
+      {pages.map((page, index) => <button type="button" key={page.id} aria-current={activePage === page.id ? 'page' : undefined} onClick={() => select(page.id)} className={`flex w-full items-start gap-2 rounded-lg border px-3 py-3 text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400 ${activePage === page.id ? 'border-indigo-700 bg-indigo-950/60 text-indigo-100' : 'border-transparent text-slate-300 hover:border-slate-700 hover:bg-slate-800'}`}><span className="mt-0.5 w-5 shrink-0 text-xs text-slate-500">{mode === 'runtime' ? 'R' : 'M'}{index + 1}</span><span>{page.label}</span></button>)}
+    </nav>
+    <footer className="space-y-3 border-t border-slate-800 p-4 text-xs">
+      <div className="flex items-center justify-between gap-2"><span className="truncate text-slate-200">{username}</span><span className="text-indigo-300">{role}</span></div>
+      <div className="flex gap-2"><button type="button" className="min-h-10 flex-1 rounded border border-slate-700 px-2 hover:border-indigo-400" onClick={() => { close(); onChangePassword(); }}>更改密碼</button><button type="button" className="min-h-10 flex-1 rounded border border-slate-700 px-2 hover:border-indigo-400" onClick={() => { close(); onLogout(); }}>登出</button></div>
+      <p className="text-slate-500">換頁不啟停控制；模式與資料品質以頁首狀態為準。</p>
+    </footer>
+  </>;
+  return <>
+    <aside className="hidden h-dvh w-60 shrink-0 flex-col border-r border-slate-800 bg-slate-900 md:flex">{contents}</aside>
+    <button ref={opener} type="button" aria-label="開啟功能導覽" aria-haspopup="dialog" onClick={() => drawer.current?.showModal()} className="fixed bottom-4 left-4 z-30 flex min-h-11 items-center gap-2 rounded-lg border border-indigo-400 bg-indigo-700 px-4 py-3 text-sm text-white shadow-lg md:hidden"><Menu size={18} />功能</button>
+    <dialog ref={drawer} aria-label="水泥磨功能導覽" className="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[90vw] border-r border-slate-700 bg-slate-900 p-0 text-slate-100 backdrop:bg-black/70" onClick={event => { if (event.target === event.currentTarget && event.clientX > event.currentTarget.getBoundingClientRect().right) close(); }}>
+      <div className="flex h-full flex-col"><button type="button" aria-label="關閉功能導覽" onClick={close} className="m-2 flex min-h-10 items-center justify-end gap-2 rounded px-3 text-sm text-slate-300"><X size={18} />關閉</button>{contents}</div>
+    </dialog>
+  </>;
+}

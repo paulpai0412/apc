@@ -1,3 +1,16 @@
+model_binding:
+  schema_version: 1
+  controller_name: "VP_CSTR"
+  sample_time: 10
+  prediction_horizon: 30
+  control_horizon: 5
+  cvs:
+    - {"name":"CSTR_Temp","description":"Reactor Internal Temperature","units":"K","node_ids":{"pv":"CSTR_Temp:PV","target":"CSTR_Temp:Target","prediction":"CSTR_Temp:Prediction","limits":{"high":"CSTR_Temp:HighLimit","low":"CSTR_Temp:LowLimit","hh":"CSTR_Temp:HighHighLimit","ll":"CSTR_Temp:LowLowLimit"}}}
+    - {"name":"CSTR_Conc","description":"Concentration of Reactant A","units":"kmol/m3","node_ids":{"pv":"CSTR_Conc:PV","target":"CSTR_Conc:Target","prediction":"CSTR_Conc:Prediction","limits":{"high":"CSTR_Conc:HighLimit","low":"CSTR_Conc:LowLimit","hh":"CSTR_Conc:HighHighLimit","ll":"CSTR_Conc:LowLowLimit"}}}
+  mvs:
+    - {"name":"CSTR_Cooling","description":"Cooling Jacket Temperature Setpoint","units":"K","node_ids":{"pv":"CSTR_Cooling:PV","sp":"CSTR_Cooling:SP","applied_sp":"CSTR_Cooling:AppliedSP","op":"CSTR_Cooling:OP","mode":"CSTR_Cooling:Mode","mode_target":"CSTR_Cooling:ModeTarget","future_plan":"CSTR_Cooling:FuturePlan","limits":{"high":"CSTR_Cooling:HighLimit","low":"CSTR_Cooling:LowLimit","hh":"CSTR_Cooling:HighHighLimit","ll":"CSTR_Cooling:LowLowLimit"}}}
+  dvs:
+    - {"name":"CSTR_Feed","description":"Feed Flow Rate","units":"m3/h","node_ids":{"pv":"CSTR_Feed:AcquiredPV","limits":{"high":"CSTR_Feed:HighLimit","low":"CSTR_Feed:LowLimit"}}}
 nodes:
   # --- SYSTEM: VP_CSTR ---
   - nodeId: "VP_CSTR:ControlNodes"
@@ -28,16 +41,16 @@ nodes:
     nodeClass: "Variable"
     dataType: "Double"
     initialValue: 0
-  - nodeId: "VP_CSTR:ModelSelect"
+  - nodeId: "VP_CSTR:AcquisitionSequence"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+    comment: "Simulator-owned odd/even complete-frame counter; static zero is not fresh"
+  - nodeId: "VP_CSTR:ControlObservation"
     nodeClass: "Variable"
     dataType: "String"
     initialValue: ""
-    comment: "Write model filename to trigger hot-swap (e.g., 'Batman_v2_model.json')"
-  - nodeId: "VP_CSTR:AvailableModels"
-    nodeClass: "Variable"
-    dataType: "StringArray"
-    initialValue: []
-    comment: "List of available model files in model directory"
+    comment: "Engine measured-performance JSON; advisory, not command authority"
   - nodeId: "VP_CSTR:ConfigurationStatus"
     nodeClass: "Variable"
     dataType: "String"
@@ -158,6 +171,10 @@ nodes:
   - nodeId: "CSTR_Cooling:SP"
     nodeClass: "Variable"
     dataType: "Double"
+    initialValue: 300
+  - nodeId: "CSTR_Cooling:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
     initialValue: 0
   - nodeId: "CSTR_Cooling:OP"
     nodeClass: "Variable"
@@ -211,6 +228,10 @@ nodes:
     nodeClass: "Object"
     description: "Feed Flow Rate"
   - nodeId: "CSTR_Feed:PV"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 6
+  - nodeId: "CSTR_Feed:AcquiredPV"
     nodeClass: "Variable"
     dataType: "Double"
     initialValue: 0

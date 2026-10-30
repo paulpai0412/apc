@@ -4,6 +4,7 @@ use authrity_apc_engine::config::*;
 /// Create a minimal 1x1 model for testing
 pub fn create_simple_1x1_model() -> UnifiedModel {
     UnifiedModel {
+        control_strategy: ControlStrategy::default(),
         metadata: Metadata {
             name: "Test1x1".to_string(),
             description: "Simple test".to_string(),
@@ -66,6 +67,7 @@ pub fn create_simple_1x1_model() -> UnifiedModel {
                 node_ids: MvNodes {
                     pv: "MV1:PV".to_string(),
                     sp: "MV1:SP".to_string(),
+                    applied_sp: None,
                     op: "MV1:OP".to_string(),
                     mode: "MV1:Mode".to_string(),
                     mode_target: "MV1:ModeTarget".to_string(),
@@ -152,6 +154,7 @@ pub fn create_2x2_model() -> UnifiedModel {
         node_ids: MvNodes {
             pv: "MV2:PV".to_string(),
             sp: "MV2:SP".to_string(),
+            applied_sp: None,
             op: "MV2:OP".to_string(),
             mode: "MV2:Mode".to_string(),
             mode_target: "MV2:ModeTarget".to_string(),

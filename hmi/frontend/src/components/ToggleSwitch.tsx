@@ -13,6 +13,10 @@ export const ToggleSwitch: React.FC<ToggleProps> = ({ label, enabled, onToggle, 
     <div className="flex flex-col items-center gap-1">
       <span className={`text-[10px] uppercase font-bold tracking-wider ${disabled ? 'text-slate-600' : 'text-slate-400'}`}>{label}</span>
       <button 
+        type="button"
+        role="switch"
+        aria-label={label}
+        aria-checked={enabled}
         onClick={() => !disabled && onToggle(!enabled)}
         disabled={disabled}
         className={`w-12 h-6 rounded-full p-1 transition-colors duration-300 ${

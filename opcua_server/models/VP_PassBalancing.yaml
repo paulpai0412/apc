@@ -1,3 +1,26 @@
+model_binding:
+  schema_version: 1
+  controller_name: "VP_PassBalancing"
+  sample_time: 10
+  prediction_horizon: 30
+  control_horizon: 20
+  cvs:
+    - {"name":"T1_Dev","description":"Pass 1 temperature deviation from average","units":"degC","node_ids":{"pv":"T1_Dev:PV","target":"T1_Dev:Target","prediction":"T1_Dev:Prediction","limits":{"high":"T1_Dev:HighLimit","low":"T1_Dev:LowLimit","hh":"T1_Dev:HighHighLimit","ll":"T1_Dev:LowLowLimit"}}}
+    - {"name":"T2_Dev","description":"Pass 2 temperature deviation from average","units":"degC","node_ids":{"pv":"T2_Dev:PV","target":"T2_Dev:Target","prediction":"T2_Dev:Prediction","limits":{"high":"T2_Dev:HighLimit","low":"T2_Dev:LowLimit","hh":"T2_Dev:HighHighLimit","ll":"T2_Dev:LowLowLimit"}}}
+    - {"name":"T3_Dev","description":"Pass 3 temperature deviation from average","units":"degC","node_ids":{"pv":"T3_Dev:PV","target":"T3_Dev:Target","prediction":"T3_Dev:Prediction","limits":{"high":"T3_Dev:HighLimit","low":"T3_Dev:LowLimit","hh":"T3_Dev:HighHighLimit","ll":"T3_Dev:LowLowLimit"}}}
+    - {"name":"T4_Dev","description":"Pass 4 temperature deviation from average","units":"degC","node_ids":{"pv":"T4_Dev:PV","target":"T4_Dev:Target","prediction":"T4_Dev:Prediction","limits":{"high":"T4_Dev:HighLimit","low":"T4_Dev:LowLimit","hh":"T4_Dev:HighHighLimit","ll":"T4_Dev:LowLowLimit"}}}
+    - {"name":"T5_Dev","description":"Pass 5 temperature deviation from average","units":"degC","node_ids":{"pv":"T5_Dev:PV","target":"T5_Dev:Target","prediction":"T5_Dev:Prediction","limits":{"high":"T5_Dev:HighLimit","low":"T5_Dev:LowLimit","hh":"T5_Dev:HighHighLimit","ll":"T5_Dev:LowLowLimit"}}}
+    - {"name":"T6_Dev","description":"Pass 6 temperature deviation from average","units":"degC","node_ids":{"pv":"T6_Dev:PV","target":"T6_Dev:Target","prediction":"T6_Dev:Prediction","limits":{"high":"T6_Dev:HighLimit","low":"T6_Dev:LowLimit","hh":"T6_Dev:HighHighLimit","ll":"T6_Dev:LowLowLimit"}}}
+    - {"name":"DisturbanceEnable","description":"Disturbance command as binary CV (1=on, 0=off)","units":"","node_ids":{"pv":"DisturbanceEnable:PV","target":"DisturbanceEnable:Target","prediction":"DisturbanceEnable:Prediction","limits":{"high":"DisturbanceEnable:HighLimit","low":"DisturbanceEnable:LowLimit","hh":"DisturbanceEnable:HighHighLimit","ll":"DisturbanceEnable:LowLowLimit"}}}
+    - {"name":"Sum_Bias","description":"Bias sum","units":"","node_ids":{"pv":"Sum_Bias:PV","target":"Sum_Bias:Target","prediction":"Sum_Bias:Prediction","limits":{"high":"Sum_Bias:HighLimit","low":"Sum_Bias:LowLimit","hh":"Sum_Bias:HighHighLimit","ll":"Sum_Bias:LowLowLimit"}}}
+  mvs:
+    - {"name":"FC1_Bias","description":"Bias MV for pass 1 valve","units":"%","node_ids":{"pv":"FC1_Bias:PV","sp":"FC1_Bias:SP","applied_sp":"FC1_Bias:AppliedSP","op":"FC1_Bias:OP","mode":"FC1_Bias:Mode","mode_target":"FC1_Bias:ModeTarget","future_plan":"FC1_Bias:FuturePlan","limits":{"high":"FC1_Bias:HighLimit","low":"FC1_Bias:LowLimit","hh":"FC1_Bias:HighHighLimit","ll":"FC1_Bias:LowLowLimit"}}}
+    - {"name":"FC2_Bias","description":"Bias MV for pass 2 valve","units":"%","node_ids":{"pv":"FC2_Bias:PV","sp":"FC2_Bias:SP","applied_sp":"FC2_Bias:AppliedSP","op":"FC2_Bias:OP","mode":"FC2_Bias:Mode","mode_target":"FC2_Bias:ModeTarget","future_plan":"FC2_Bias:FuturePlan","limits":{"high":"FC2_Bias:HighLimit","low":"FC2_Bias:LowLimit","hh":"FC2_Bias:HighHighLimit","ll":"FC2_Bias:LowLowLimit"}}}
+    - {"name":"FC3_Bias","description":"Bias MV for pass 3 valve","units":"%","node_ids":{"pv":"FC3_Bias:PV","sp":"FC3_Bias:SP","applied_sp":"FC3_Bias:AppliedSP","op":"FC3_Bias:OP","mode":"FC3_Bias:Mode","mode_target":"FC3_Bias:ModeTarget","future_plan":"FC3_Bias:FuturePlan","limits":{"high":"FC3_Bias:HighLimit","low":"FC3_Bias:LowLimit","hh":"FC3_Bias:HighHighLimit","ll":"FC3_Bias:LowLowLimit"}}}
+    - {"name":"FC4_Bias","description":"Bias MV for pass 4 valve","units":"%","node_ids":{"pv":"FC4_Bias:PV","sp":"FC4_Bias:SP","applied_sp":"FC4_Bias:AppliedSP","op":"FC4_Bias:OP","mode":"FC4_Bias:Mode","mode_target":"FC4_Bias:ModeTarget","future_plan":"FC4_Bias:FuturePlan","limits":{"high":"FC4_Bias:HighLimit","low":"FC4_Bias:LowLimit","hh":"FC4_Bias:HighHighLimit","ll":"FC4_Bias:LowLowLimit"}}}
+    - {"name":"FC5_Bias","description":"Bias MV for pass 5 valve","units":"%","node_ids":{"pv":"FC5_Bias:PV","sp":"FC5_Bias:SP","applied_sp":"FC5_Bias:AppliedSP","op":"FC5_Bias:OP","mode":"FC5_Bias:Mode","mode_target":"FC5_Bias:ModeTarget","future_plan":"FC5_Bias:FuturePlan","limits":{"high":"FC5_Bias:HighLimit","low":"FC5_Bias:LowLimit","hh":"FC5_Bias:HighHighLimit","ll":"FC5_Bias:LowLowLimit"}}}
+    - {"name":"FC6_Bias","description":"Bias MV for pass 6 valve","units":"%","node_ids":{"pv":"FC6_Bias:PV","sp":"FC6_Bias:SP","applied_sp":"FC6_Bias:AppliedSP","op":"FC6_Bias:OP","mode":"FC6_Bias:Mode","mode_target":"FC6_Bias:ModeTarget","future_plan":"FC6_Bias:FuturePlan","limits":{"high":"FC6_Bias:HighLimit","low":"FC6_Bias:LowLimit","hh":"FC6_Bias:HighHighLimit","ll":"FC6_Bias:LowLowLimit"}}}
+  dvs: []
 nodes:
   # --- SYSTEM: VP_PassBalancing ---
   - nodeId: "VP_PassBalancing:ControlNodes"
@@ -28,16 +51,16 @@ nodes:
     nodeClass: "Variable"
     dataType: "Double"
     initialValue: 0
-  - nodeId: "VP_PassBalancing:ModelSelect"
+  - nodeId: "VP_PassBalancing:AcquisitionSequence"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+    comment: "Simulator-owned odd/even complete-frame counter; static zero is not fresh"
+  - nodeId: "VP_PassBalancing:ControlObservation"
     nodeClass: "Variable"
     dataType: "String"
     initialValue: ""
-    comment: "Write model filename to trigger hot-swap (e.g., 'Batman_v2_model.json')"
-  - nodeId: "VP_PassBalancing:AvailableModels"
-    nodeClass: "Variable"
-    dataType: "StringArray"
-    initialValue: []
-    comment: "List of available model files in model directory"
+    comment: "Engine measured-performance JSON; advisory, not command authority"
   - nodeId: "VP_PassBalancing:ConfigurationStatus"
     nodeClass: "Variable"
     dataType: "String"
@@ -879,11 +902,11 @@ nodes:
   - nodeId: "Pass1:CokeOffset"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 1.8
   - nodeId: "Pass1:CokeRampPerMin"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 0.04
 
   - nodeId: "FC2"
     nodeClass: "Object"
@@ -907,11 +930,11 @@ nodes:
   - nodeId: "Pass2:CokeOffset"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 1.2
   - nodeId: "Pass2:CokeRampPerMin"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 0.03
 
   - nodeId: "FC3"
     nodeClass: "Object"
@@ -935,11 +958,11 @@ nodes:
   - nodeId: "Pass3:CokeOffset"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 0.8
   - nodeId: "Pass3:CokeRampPerMin"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 0.025
 
   - nodeId: "FC4"
     nodeClass: "Object"
@@ -963,11 +986,11 @@ nodes:
   - nodeId: "Pass4:CokeOffset"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 0.8
   - nodeId: "Pass4:CokeRampPerMin"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 0.025
 
   - nodeId: "FC5"
     nodeClass: "Object"
@@ -991,11 +1014,11 @@ nodes:
   - nodeId: "Pass5:CokeOffset"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 1.2
   - nodeId: "Pass5:CokeRampPerMin"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 0.03
 
   - nodeId: "FC6"
     nodeClass: "Object"
@@ -1019,8 +1042,32 @@ nodes:
   - nodeId: "Pass6:CokeOffset"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 1.8
   - nodeId: "Pass6:CokeRampPerMin"
     nodeClass: "Variable"
     dataType: "Double"
-    initialValue: 0.0
+    initialValue: 0.04
+  - nodeId: "FC1_Bias:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+  - nodeId: "FC2_Bias:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+  - nodeId: "FC3_Bias:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+  - nodeId: "FC4_Bias:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+  - nodeId: "FC5_Bias:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+  - nodeId: "FC6_Bias:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0

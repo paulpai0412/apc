@@ -65,23 +65,21 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 pub struct ApiConfig {
     pub port: u16,
+    #[serde(default = "default_bind_address")]
+    pub bind_address: std::net::IpAddr,
+}
+
+fn default_bind_address() -> std::net::IpAddr {
+    std::net::Ipv4Addr::UNSPECIFIED.into()
 }
 
 impl Config {
-    pub fn load() -> Self {
+    pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         let config_path = "config/config.toml";
-        
         match fs::read_to_string(config_path) {
-            Ok(contents) => {
-                toml::from_str(&contents).unwrap_or_else(|e| {
-                    eprintln!("Failed to parse {}: {}, using defaults", config_path, e);
-                    Self::default()
-                })
-            }
-            Err(_) => {
-                eprintln!("Config file {} not found, using defaults", config_path);
-                Self::default()
-            }
+            Ok(contents) => Ok(toml::from_str(&contents)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error.into()),
         }
     }
 }
@@ -89,7 +87,7 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            api: ApiConfig { port: 9090 },
+            api: ApiConfig { port: 9090, bind_address: default_bind_address() },
         }
     }
 }

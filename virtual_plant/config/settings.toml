@@ -4,6 +4,18 @@ security_policy = "Basic256Sha256"
 message_mode = "SignAndEncrypt"
 namespace_index = 2
 
+[acquisition]
+# Required namespace-2 String IDs matching selected model metadata.name.
+# One simulator owns these counters. Provision writable Double nodes, initially 0.
+# Missing nodes or failed/unknown frame writes stop publication; no fake freshness.
+debutanizer = "VP_Debutanizer:AcquisitionSequence"
+cstr = "VP_CSTR:AcquisitionSequence"
+pass_balancing = "VP_PassBalancing:AcquisitionSequence"
+# Feedback nodes published by this simulator:
+# Reflux/Steam/CSTR_Cooling/FC1_Bias..FC6_Bias:AppliedSP (MV node_ids.applied_sp).
+# Feed_Flow/CSTR_Feed:AcquiredPV (DV node_ids.pv); original :PV remains command input.
+# No SP, Mode, ModeTarget, target, tuning, or limit is initialized by the simulator.
+
 [identity]
 app_name = "AuTHRity Virtual Plant"
 app_uri = "urn:authrity:virtual-plant"

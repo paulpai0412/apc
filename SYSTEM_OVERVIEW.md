@@ -62,6 +62,8 @@ This document reflects the current implementation across `hmi`, `controller_host
 - Proxies deployment and controller lifecycle calls.
 - Hosts auth/session/RBAC + admin user/audit APIs.
 - Runs historian task for QuestDB logging and trend/step-response data endpoints.
+- Serves authenticated, read-only simulation report manifests, extrema-preserving plot series, and approved artifact downloads through `/api/simulation-reports`.
+- Hosts engineer/admin-only `/api/research` operations for immutable datasets, actual cleaning, saved study versions, adaptive local worker launch/cancellation, and persisted evidence. Research defaults off and requires an isolated HMI with OPC UA/historian disabled.
 
 ## `hmi` frontend (React)
 - Login/session bootstrap (`/api/auth/me`) and role-gated experience.
@@ -69,6 +71,7 @@ This document reflects the current implementation across `hmi`, `controller_host
 - Model Generator with parametric + step-response workflows.
 - Step Response Tool and trend tooling through backend APIs.
 - Settings view for infrastructure, user management, and audit events.
+- Autoresearch replaces the standalone Simulation Reports sidebar entry: guided import/cleaning with before-after charts, method/quality-band configuration, adaptive progress, trial ancestry, held-out metrics, and actual local COM traces. Historical report charts/downloads remain nested in results.
 
 ## `opcua_server`
 - Hosts/serves node maps and OPC UA process namespace.
@@ -76,6 +79,13 @@ This document reflects the current implementation across `hmi`, `controller_host
 
 ## `virtual_plant`
 - Simulates process behavior and writes tags to OPC UA for testing/training.
+
+## `validation` and isolated native OPC DA
+- `validation/campaign.py` generates configurable three-calendar-month histories from an independent nonlinear second-order plant, identifies FIR models, selects tuning on month two, and reports untouched month-three performance.
+- `apc_engine`'s `mpc_campaign` uses the real `DmcController`; full direct and native COM DA runs share the fixed scenario and plant, not their learned model.
+- `opc_da_simulator` supplies a native Windows COM in-process synchronous server, JSONL console client, and interoperability tests. Wine execution uses an isolated prefix; it does not certify ABB hardware or remote DCOM.
+- Results are data files under a configurable HMI report root, not hardcoded React curves. See [DIGITAL_TWIN_VALIDATION.md](DIGITAL_TWIN_VALIDATION.md) and [validation/README.md](validation/README.md).
+
 
 ---
 
@@ -190,6 +200,13 @@ This document reflects the current implementation across `hmi`, `controller_host
 ## Engine model handling
 - Supports `parametric` and `step_response` model types.
 - Runtime save path exists to persist current tuned configuration snapshots.
+
+## Historical-data validation and tuning
+
+- Offline identification, an independent finite-response plant twin, and actual `DmcController` closed-loop evaluation are described in [DIGITAL_TWIN_VALIDATION.md](DIGITAL_TWIN_VALIDATION.md).
+- Dataset suitability and licensing evidence: [validation/DATASETS.md](validation/DATASETS.md).
+- Tool commands and verification procedure: [validation/README.md](validation/README.md).
+- Synthetic runs verify software behavior only. Real cement-mill fidelity, OPC DA interoperability, and ABB write authorization are separate acceptance gates.
 
 ---
 

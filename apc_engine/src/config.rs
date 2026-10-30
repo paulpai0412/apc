@@ -1,8 +1,8 @@
 // src/config.rs
-use serde::Deserialize;
-use std::fs::File;
-use std::io::BufReader;
-use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::time::Duration;
+use anyhow::{ensure, Context, Result};
 
 // --- ROOT STRUCTURE ---
 #[derive(Debug, Deserialize, Clone)]
@@ -11,16 +11,179 @@ pub struct UnifiedModel {
     pub tuning: Tuning,
     pub variables: Variables,
     pub physics: Physics,
+    #[serde(default)]
+    pub control_strategy: ControlStrategy,
 }
 
 impl UnifiedModel {
     pub fn load(path: &str) -> Result<Self> {
-        let file = File::open(path)
-            .with_context(|| format!("Failed to open config file: {}", path))?;
-        let reader = BufReader::new(file);
-        let config = serde_json::from_reader(reader)
-            .context("Failed to parse JSON config")?;
-        Ok(config)
+        Self::load_verified(path, None).map(|(model, _)| model)
+    }
+
+    /// Hash and parse the same owned byte buffer; return its actual digest even
+    /// for manual launches, and never reopen a verified path.
+    pub fn load_verified(path: &str, expected_sha256: Option<&str>) -> Result<(Self, String)> {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("Failed to read config file: {path}"))?;
+        Self::from_verified_bytes(&bytes, expected_sha256)
+    }
+
+    fn from_verified_bytes(bytes: &[u8], expected_sha256: Option<&str>) -> Result<(Self, String)> {
+        let actual = format!("{:x}", Sha256::digest(bytes));
+        if let Some(expected) = expected_sha256 {
+            ensure!(expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                "expected-model-sha256 must contain exactly 64 lowercase hexadecimal characters");
+            ensure!(actual == expected, "Model SHA-256 mismatch: expected {expected}, read {actual}");
+        }
+        let config: Self = serde_json::from_slice(bytes).context("Failed to parse JSON config")?;
+        config.validate_runtime()?;
+        Ok((config, actual))
+    }
+
+    pub fn sample_interval(&self) -> Result<Duration> {
+        positive_duration(self.tuning.sample_time, "sample_time")
+    }
+
+    /// Validate before coefficient generation, indexing or duration conversion.
+    pub fn validate_runtime(&self) -> Result<()> {
+        self.sample_interval()?;
+        self.validate_control_strategy()?;
+        let t = &self.tuning;
+        ensure!(t.prediction_horizon > 0 && t.control_horizon > 0 && t.control_horizon <= t.prediction_horizon,
+            "Invalid prediction/control horizons");
+        ensure!(t.solver_tolerance.is_finite() && t.solver_tolerance > 0.0 && t.max_iterations > 0,
+            "Invalid solver tolerance/iteration limit");
+        ensure!(t.terminal_weight_factor.is_finite() && t.terminal_weight_factor > 0.0,
+            "Invalid terminal weight");
+        let nc = self.variables.cvs.len();
+        let nm = self.variables.mvs.len();
+        ensure!(nc > 0 && nm > 0, "At least one CV and MV are required");
+        for cv in &self.variables.cvs {
+            ensure!(ordered_limits(cv.limits.low_low, cv.limits.low, cv.limits.high, cv.limits.high_high),
+                "Invalid CV limits: {}", cv.name);
+            ensure!(cv.limits.target.is_finite() && cv.limits.target >= cv.limits.low && cv.limits.target <= cv.limits.high,
+                "Invalid CV target: {}", cv.name);
+            ensure!(cv.weight.is_finite() && cv.weight >= 0.0 && cv.alpha.is_finite() && (0.0..=1.0).contains(&cv.alpha)
+                && cv.ece_factor.is_finite() && cv.ece_factor > 0.0 && cv.slack_weight.is_finite() && cv.slack_weight >= 0.0,
+                "Invalid CV tuning: {}", cv.name);
+            if let OptimizationMode::Target { value } = cv.optimization_mode {
+                ensure!(value.is_finite(), "Nonfinite CV optimization target");
+            }
+        }
+        for mv in &self.variables.mvs {
+            ensure!(ordered_limits(mv.limits.low_low, mv.limits.low, mv.limits.high, mv.limits.high_high),
+                "Invalid MV limits: {}", mv.name);
+            ensure!(mv.max_move.is_finite() && mv.max_move > 0.0 && mv.weight_r.is_finite() && mv.weight_r >= 0.0
+                && mv.target_weight.is_finite() && mv.target_weight >= 0.0 && mv.target.is_none_or(f64::is_finite),
+                "Invalid MV tuning: {}", mv.name);
+            ensure!(mv.target_weight == 0.0 || mv.node_ids.target.is_some() || mv.target.is_some(),
+                "Weighted MV target needs a configured target or readable target node: {}", mv.name);
+            if let MvOptimizationMode::Target { value } = mv.optimization_mode {
+                ensure!(value.is_finite(), "Nonfinite MV optimization target");
+            }
+        }
+        for dv in &self.variables.dvs {
+            ensure!(dv.limits.low.is_finite() && dv.limits.high.is_finite() && dv.limits.low < dv.limits.high,
+                "Invalid DV limits: {}", dv.name);
+        }
+        if self.metadata.model_type == "parametric" {
+            for matrix in [&self.physics.gain, &self.physics.tau, &self.physics.dead_time] {
+                ensure!(matrix.len() == nc && matrix.iter().all(|r| r.len() == nm && r.iter().all(|x| x.is_finite())),
+                    "Invalid parametric MV matrix dimensions/values");
+            }
+            ensure!(self.physics.tau.iter().flatten().all(|v| *v >= 0.0)
+                && self.physics.dead_time.iter().flatten().all(|v| *v >= 0.0), "Negative time constant/dead time");
+        }
+        Ok(())
+    }
+
+    pub fn validate_live_tuning(&self, cv_weights: &[f64], cv_alphas: &[f64], mv_weights: &[f64], frozen: bool) -> Result<()> {
+        ensure!(cv_weights.len() == self.variables.cvs.len() && cv_alphas.len() == self.variables.cvs.len()
+            && mv_weights.len() == self.variables.mvs.len(), "Incomplete live tuning vectors");
+        ensure!(cv_weights.iter().chain(mv_weights).all(|v| v.is_finite() && *v >= 0.0)
+            && cv_alphas.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)), "Invalid live tuning");
+        if frozen {
+            ensure!(self.variables.cvs.iter().enumerate().all(|(i,cv)| cv_weights[i] == cv.weight && cv_alphas[i] == cv.alpha)
+                && self.variables.mvs.iter().enumerate().all(|(i,mv)| mv_weights[i] == mv.weight_r),
+                "Live tuning differs from the SHA-256 selected model; restore selected values or select a new version");
+        }
+        Ok(())
+    }
+
+    /// The method is fixed for the controller lifetime; live weights/targets remain supported.
+    pub fn validate_control_strategy(&self) -> Result<()> {
+        let strategy = &self.control_strategy;
+        ensure!(strategy.version == 1, "Unsupported control_strategy version: {}", strategy.version);
+        match strategy.method {
+            ControlMethod::StandardDmc => {
+                ensure!(strategy.bands.is_empty(), "standard_dmc requires empty control_strategy bands");
+            }
+            ControlMethod::SoftBand => {
+                ensure!(!self.variables.cvs.is_empty() && strategy.bands.len() == self.variables.cvs.len(),
+                    "soft_band requires exactly one band per CV");
+                for (i, (cv, band)) in self.variables.cvs.iter().zip(&strategy.bands).enumerate() {
+                    ensure!(matches!(cv.optimization_mode, OptimizationMode::Target { .. }),
+                        "soft_band CV {i} must use Target optimization, not Zone/Minimize/Maximize");
+                    ensure!(band.half_width.is_finite() && band.half_width > 0.0,
+                        "soft_band CV {i} half_width must be finite and positive");
+                    ensure!(band.tracking_scale.is_finite() && band.tracking_scale > 0.0 && band.tracking_scale <= 1.0,
+                        "soft_band CV {i} tracking_scale must be in (0, 1]");
+                    ensure!(band.quadratic_penalty.is_finite() && band.quadratic_penalty > 0.0,
+                        "soft_band CV {i} quadratic_penalty must be finite and positive");
+                    ensure!(cv.ece_factor.is_finite() && cv.ece_factor > 0.0,
+                        "soft_band CV {i} ece_factor must be finite and positive");
+                }
+                for (i, mv) in self.variables.mvs.iter().enumerate() {
+                    ensure!(matches!(mv.optimization_mode, MvOptimizationMode::Target { .. }),
+                        "soft_band MV {i} must use Target optimization, not economic Minimize/Maximize");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn positive_duration(seconds: f64, name: &str) -> Result<Duration> {
+    ensure!(seconds.is_finite() && seconds > 0.0, "{name} must be finite and positive");
+    let value = Duration::try_from_secs_f64(seconds).with_context(|| format!("{name} is not a representable duration"))?;
+    ensure!(!value.is_zero(), "{name} must be at least one nanosecond");
+    // Tokio deadlines must also be representable, not merely Duration itself.
+    ensure!(std::time::Instant::now().checked_add(value).is_some(), "{name} exceeds clock range");
+    Ok(value)
+}
+
+pub fn ordered_limits(ll: f64, low: f64, high: f64, hh: f64) -> bool {
+    [ll, low, high, hh].iter().all(|v| v.is_finite()) && ll <= low && low < high && high <= hh
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlMethod {
+    #[default]
+    StandardDmc,
+    SoftBand,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct QualityBand {
+    /// Engineering-unit half width about the live target, not the operating limits.
+    pub half_width: f64,
+    pub tracking_scale: f64,
+    pub quadratic_penalty: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ControlStrategy {
+    pub method: ControlMethod,
+    pub version: u32,
+    pub bands: Vec<QualityBand>,
+}
+
+impl Default for ControlStrategy {
+    fn default() -> Self {
+        Self { method: ControlMethod::StandardDmc, version: 1, bands: Vec::new() }
     }
 }
 
@@ -54,7 +217,7 @@ fn default_terminal_weight() -> f64 {
     10.0 // Industry standard: heavily weight terminal state for stability
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct Variables {
     pub cvs: Vec<CvConfig>,
     pub mvs: Vec<MvConfig>,
@@ -65,7 +228,7 @@ pub struct Variables {
 // --- CV DEFINITIONS ---
 
 /// Optimization mode for CVs
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type")]
 pub enum OptimizationMode {
     /// Traditional target tracking: minimize (CV - target)^2
@@ -87,7 +250,7 @@ impl Default for OptimizationMode {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct CvConfig {
     pub name: String,
     pub description: String,
@@ -115,7 +278,7 @@ fn default_slack_weight() -> f64 {
     1000.0 // High penalty for constraint violations
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct CvLimits {
     pub low_low: f64,
     pub low: f64,
@@ -124,7 +287,7 @@ pub struct CvLimits {
     pub high_high: f64,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct CvNodes {
     pub pv: String,
     pub target: String,
@@ -135,7 +298,7 @@ pub struct CvNodes {
 }
 
 // --- MV DEFINITIONS ---
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(tag = "type")]
 pub enum MvOptimizationMode {
     /// Traditional MV target tracking
@@ -155,7 +318,7 @@ impl Default for MvOptimizationMode {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct MvConfig {
     pub name: String,
     pub description: String, //
@@ -172,7 +335,7 @@ pub struct MvConfig {
     pub node_ids: MvNodes,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct MvLimits {
     pub low_low: f64,
     pub low: f64,
@@ -180,21 +343,25 @@ pub struct MvLimits {
     pub high_high: f64,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct MvNodes {
     #[allow(dead_code)] // Reserved for future feedback validation
     pub pv: String,          // Actual process measurement
     pub sp: String,          // Setpoint (where MPC writes)
+    /// Effective lower-PID setpoint feedback, in the same units as the commanded SP.
+    /// When absent, the SP node is treated as one readable/writable setpoint coordinate.
+    #[serde(default)]
+    pub applied_sp: Option<String>,
     pub op: String,          // PID output to valve
-    pub mode: String,        // Actual PID mode (Generic: 0=Operator, 1=Auto, 2=Cascade, 3=RemoteCascade)
-    pub mode_target: String, // Target/requested mode from operator
+    pub mode: String,        // Actual PID mode; numeric meanings come from the commissioned profile.
+    pub mode_target: String, // Independent requested mode; never accepted as actual-mode feedback.
     #[serde(default)]
     pub target: Option<String>, // Optional economic target node
     pub future_plan: String,
     pub limits: LimitNodes, 
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct DvConfig {
     pub name: String,
     pub description: String,
@@ -203,26 +370,26 @@ pub struct DvConfig {
     pub node_ids: DvNodes,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct DvLimits {
     pub low: f64,
     pub high: f64,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct DvNodes {
     pub pv: String,
     pub limits: DvLimitNodes,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct DvLimitNodes {
     pub high: String,
     pub low: String,
 }
 
 // --- SHARED STRUCTS ---
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct LimitNodes {
     pub high: String,
     pub low: String,
@@ -314,3 +481,88 @@ pub struct PathConfig {
 }
 
 // Remove impl AppSettings::load as we will build it manually
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+
+    fn model_bytes() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "metadata": {"name":"safety","description":"","version":"1","model_type":"step_response"},
+            "tuning": {"prediction_horizon":2,"control_horizon":1,"sample_time":1.0,
+                "solver_tolerance":1e-6,"max_iterations":100},
+            "variables": {
+                "cvs": [{"name":"CV","description":"","units":"unit","weight":1.0,
+                    "limits":{"low_low":0.0,"low":1.0,"target":5.0,"high":9.0,"high_high":10.0},
+                    "node_ids":{"pv":"CV:PV","target":"CV:Target","prediction":"CV:Prediction",
+                        "limits":{"low":"CV:L","high":"CV:H","ll":"CV:LL","hh":"CV:HH"}}}],
+                "mvs": [{"name":"MV","description":"","units":"unit","weight_r":1.0,"max_move":1.0,
+                    "limits":{"low_low":0.0,"low":1.0,"high":9.0,"high_high":10.0},
+                    "node_ids":{"pv":"MV:PV","sp":"MV:SP","op":"MV:OP","mode":"MV:Mode",
+                        "mode_target":"MV:ModeTarget","future_plan":"MV:Plan",
+                        "limits":{"low":"MV:L","high":"MV:H","ll":"MV:LL","hh":"MV:HH"}}}]
+            },
+            "physics":{"step_coefficients":[[[0.2,0.5,1.0]]]}
+        })).unwrap()
+    }
+
+    #[test]
+    fn verification_is_bound_to_the_exact_parsed_buffer() {
+        let bytes = model_bytes();
+        let expected = format!("{:x}", Sha256::digest(&bytes));
+        let (_,actual)=UnifiedModel::from_verified_bytes(&bytes, Some(&expected)).unwrap();
+        assert_eq!(actual,expected);
+        let mut changed = bytes.clone();
+        changed.push(b' ');
+        // Same JSON model, different bytes: cannot silently substitute it.
+        let (_,changed_digest)=UnifiedModel::from_verified_bytes(&changed, None).unwrap();
+        assert_eq!(changed_digest,format!("{:x}",Sha256::digest(&changed)));
+        assert_ne!(actual,changed_digest);
+        assert!(UnifiedModel::from_verified_bytes(&changed, Some(&expected)).is_err());
+        assert!(UnifiedModel::from_verified_bytes(&bytes, Some(&expected.to_uppercase())).is_err());
+        assert!(UnifiedModel::from_verified_bytes(&bytes, Some("abc")).is_err());
+    }
+
+    #[test]
+    fn invalid_sampling_is_rejected_before_duration_or_controller_construction() {
+        let (mut model, _) = UnifiedModel::from_verified_bytes(&model_bytes(), None).unwrap();
+        for value in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MAX, 1e-20] {
+            model.tuning.sample_time = value;
+            assert!(model.validate_runtime().is_err());
+        }
+        model.tuning.sample_time = 0.001;
+        assert_eq!(model.sample_interval().unwrap(), Duration::from_millis(1));
+    }
+
+    #[test]
+    fn static_tuning_limits_and_missing_weighted_targets_fail_closed() {
+        let (base, _) = UnifiedModel::from_verified_bytes(&model_bytes(), None).unwrap();
+        let mut model = base.clone();
+        model.variables.cvs[0].ece_factor = 0.0;
+        assert!(model.validate_runtime().is_err());
+        let mut model = base.clone();
+        model.variables.mvs[0].target_weight = 1.0;
+        assert!(model.validate_runtime().is_err());
+        model.variables.mvs[0].target = Some(5.0);
+        assert!(model.validate_runtime().is_ok());
+        let mut model = base.clone();
+        model.variables.cvs[0].limits.high = 0.5;
+        assert!(model.validate_runtime().is_err());
+        let mut model = base;
+        model.variables.cvs[0].alpha = 1.01;
+        assert!(model.validate_runtime().is_err());
+    }
+
+    #[test]
+    fn immutable_tuning_cannot_silently_become_live_tuning() {
+        let (model, _) = UnifiedModel::from_verified_bytes(&model_bytes(), None).unwrap();
+        assert!(model.validate_live_tuning(&[1.0], &[0.0], &[1.0], true).is_ok());
+        assert!(model.validate_live_tuning(&[2.0], &[0.0], &[1.0], true).is_err());
+        assert!(model.validate_live_tuning(&[1.0], &[0.5], &[1.0], true).is_err());
+        assert!(model.validate_live_tuning(&[1.0], &[0.0], &[2.0], true).is_err());
+        assert!(model.validate_live_tuning(&[2.0], &[0.5], &[2.0], false).is_ok());
+        assert!(model.validate_live_tuning(&[], &[0.0], &[1.0], false).is_err());
+        assert!(model.validate_live_tuning(&[f64::NAN], &[0.0], &[1.0], false).is_err());
+        assert!(model.validate_live_tuning(&[1.0], &[1.01], &[1.0], false).is_err());
+    }
+}

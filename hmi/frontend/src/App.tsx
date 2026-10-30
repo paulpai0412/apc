@@ -1,838 +1,168 @@
-import { useEffect, useState, useRef } from 'react';
-import { ProcessTable } from './components/ProcessTable';
+import { useEffect, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { Sidebar } from './components/Sidebar';
-import { ToggleSwitch } from './components/ToggleSwitch';
-import { TabNavigation } from './components/TabNavigation'; 
-import { ModelGenerator } from './components/ModelGenerator';
-import { PredictionGraph } from './components/PredictionGraph';
-import { NextRunDisplay } from './components/NextRunDisplay';
-import { TrendsTab } from './components/TrendsTab';
-import { TuningTab } from './components/TuningTab';
-import { ManageTab } from './components/ManageTab';
-import { ModelsTab } from './components/ModelsTab';
-import { PlantOverview } from './components/PlantOverview';
-import { SettingsView } from './components/SettingsView';
-import { ControllerDiagnostics } from './components/ControllerDiagnostics';
-import { useTagStore } from './store/tagStore';
-import { apiChangePassword, apiLogin, apiLogout, apiMe, hasRoleAtLeast, type UserRole } from './lib/api';
+import { Autoresearch } from './components/Autoresearch';
+import { RuntimeWorkspace } from './components/RuntimeWorkspace';
+import { apiChangePassword, apiLogin, apiLogout, apiMe, hasRoleAtLeast } from './lib/api';
+import type { UserRole } from './lib/api';
+import { runtimeError, workspaceRequest } from './lib/runtimeWorkspace';
+import { useWorkspaceScene } from './hooks/useWorkspaceScene';
+import { modelingPages, runtimePages } from './types/Workspace';
+import type { ModelingPage, RuntimePage, WorkspaceMode } from './types/Workspace';
+import type { ResearchWorkspaceContext } from './types/Research';
+import type { RuntimeWorkspaceContext, WorkspaceCapabilities } from './types/RuntimeWorkspace';
 
-// --- TYPES ---
-type OpcUpdate = {
-  node_id: string;
-  value: number | string | boolean | number[];
-  timestamp: string;
-  status: number;
-};
-
-// Represents a node from the YAML file (Flat Structure)
-type NodeSpec = {
-  node_id: string;
-  node_class: string;
-  description?: string;
-  initial_value?: any; 
-};
-
-type ModelConfig = {
-  nodes: NodeSpec[];
-};
+const control = 'min-h-10 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100';
+const button = 'min-h-10 rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm hover:border-indigo-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-50';
 
 function App() {
-    const CONTROLLER_FRESHNESS_WINDOW_MS = 20000;
+  const [authReady, setAuthReady] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [username, setUsername] = useState('');
+  const [role, setRole] = useState<UserRole>('viewer');
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [forcePasswordChange, setForcePasswordChange] = useState(false);
+  const [showPasswordDialog, setShowPasswordDialog] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordStatus, setPasswordStatus] = useState('');
+  const [mode, setMode] = useState<WorkspaceMode>('runtime');
+  const [runtimePage, setRuntimePage] = useState<RuntimePage>('overview');
+  const [modelingPage, setModelingPage] = useState<ModelingPage>('overview');
+  const [capabilities, setCapabilities] = useState<WorkspaceCapabilities | null>(null);
+  const [capabilityError, setCapabilityError] = useState('');
+  const [capabilityRevision, setCapabilityRevision] = useState(0);
+  const [capabilityLoading, setCapabilityLoading] = useState(false);
+  const [researchContext, setResearchContext] = useState<ResearchWorkspaceContext>({ datasetId: '', studyId: '', runId: '', sourceLabel: '尚未選取資料', versionLabel: '尚未選取研究版本', dirty: false });
+  const [runtimeContext, setRuntimeContext] = useState<RuntimeWorkspaceContext>({ targetLabel: '尚未選取控制群組', sourceLabel: '尚未取得現場狀態', versionLabel: '活動版本未知', health: 'unknown', observedAt: null });
+  const passwordDialog = useRef<HTMLDialogElement>(null);
+  const canResearch = hasRoleAtLeast(role, 'engineer');
+  const pages = mode === 'runtime' ? runtimePages : modelingPages;
+  const pageId = mode === 'runtime' ? runtimePage : modelingPage;
+  const page = pages.find(item => item.id === pageId)!;
+  const scene = useWorkspaceScene(username, mode, pageId, page.showScene);
 
-    const [authReady, setAuthReady] = useState(false);
-    const [authenticated, setAuthenticated] = useState(false);
-    const [username, setUsername] = useState('');
-    const [role, setRole] = useState<UserRole>('viewer');
-    const [loginUser, setLoginUser] = useState('');
-    const [loginPassword, setLoginPassword] = useState('');
-    const [authError, setAuthError] = useState('');
-    const [forcePasswordChange, setForcePasswordChange] = useState(false);
-    const [showPasswordDialog, setShowPasswordDialog] = useState(false);
-    const [currentPassword, setCurrentPassword] = useState('');
-    const [newPassword, setNewPassword] = useState('');
-    const [passwordStatus, setPasswordStatus] = useState('');
-
-  const [wsConnected, setWsConnected] = useState(false); 
-  // DON'T subscribe to tags here - it causes re-render on every update!
-  // Only import the update function
-  const updateTag = useTagStore(state => state.updateTag);
-  
-  const [descriptions, setDescriptions] = useState<Record<string, string>>({});
-  
-  // These lists are populated by "Scanning" the YAML structure
-  const [cvList, setCvList] = useState<string[]>([]);
-  const [mvList, setMvList] = useState<string[]>([]);
-  const [dvList, setDvList] = useState<string[]>([]);
-
-  const [configLoaded, setConfigLoaded] = useState(false);
-  const [calcOn, setCalcOn] = useState(false);
-  const [controlEnable, setControlEnable] = useState(false);
-  const [systemPrefix, setSystemPrefix] = useState("");
-  
-  // Default active model
-  const [activeModel, setActiveModel] = useState("Plant Overview"); 
-  const [activeTab, setActiveTab] = useState("Overview");  
-
-  const [dataStale, setDataStale] = useState(false);
-    const [controllerRunning, setControllerRunning] = useState<boolean | null>(null);
-    const [controllerSummary, setControllerSummary] = useState<any | null>(null);
-
-  const ws = useRef<WebSocket | null>(null);
-
-    const getControllerLiveness = () => {
-        if (!systemPrefix) {
-            return { isFresh: false, nodeId: '', ageMs: Number.POSITIVE_INFINITY };
-        }
-
-        const tags = useTagStore.getState().tags;
-        const candidateNodes = [
-            `${systemPrefix}:Heartbeat`,
-            `${systemPrefix}:NextRun`,
-            `${systemPrefix}:SolverStatus`,
-            `${systemPrefix}:OperatingMode`,
-        ];
-
-        let bestAgeMs = Number.POSITIVE_INFINITY;
-        let freshestNode = '';
-
-        candidateNodes.forEach(nodeId => {
-            const timestamp = tags[nodeId]?.timestamp;
-            if (!timestamp) return;
-
-            const tsMs = new Date(timestamp).getTime();
-            if (!Number.isFinite(tsMs)) return;
-
-            const ageMs = Date.now() - tsMs;
-            if (ageMs < bestAgeMs) {
-                bestAgeMs = ageMs;
-                freshestNode = nodeId;
-            }
-        });
-
-        return {
-            isFresh: bestAgeMs <= CONTROLLER_FRESHNESS_WINDOW_MS,
-            nodeId: freshestNode,
-            ageMs: bestAgeMs,
-        };
-    };
-
-    useEffect(() => {
-        const bootstrapAuth = async () => {
-            try {
-                const me = await apiMe();
-                if (me.authenticated && me.username && me.role) {
-                    setAuthenticated(true);
-                    setUsername(me.username);
-                    setRole(me.role);
-                    setForcePasswordChange(me.force_password_change);
-                }
-            } finally {
-                setAuthReady(true);
-            }
-        };
-        bootstrapAuth();
-    }, []);
-
-    // Keep auth session alive while HMI is open.
-    useEffect(() => {
-        if (!authenticated) return;
-
-        let cancelled = false;
-
-        const keepAlive = async () => {
-            try {
-                const me = await apiMe();
-                if (cancelled) return;
-
-                if (!me.authenticated) {
-                    setAuthenticated(false);
-                    setUsername('');
-                    setRole('viewer');
-                    setForcePasswordChange(false);
-                    setAuthError('Session expired. Please log in again.');
-                    return;
-                }
-
-                if (me.username && me.role) {
-                    setUsername(me.username);
-                    setRole(me.role);
-                    setForcePasswordChange(me.force_password_change);
-                }
-            } catch {
-                // Ignore transient network errors; next keepalive will retry.
-            }
-        };
-
-        const interval = setInterval(() => {
-            void keepAlive();
-        }, 5 * 60 * 1000);
-
-        const onVisibilityChange = () => {
-            if (document.visibilityState === 'visible') {
-                void keepAlive();
-            }
-        };
-
-        document.addEventListener('visibilitychange', onVisibilityChange);
-        void keepAlive();
-
-        return () => {
-            cancelled = true;
-            clearInterval(interval);
-            document.removeEventListener('visibilitychange', onVisibilityChange);
-        };
-    }, [authenticated]);
-
-  // 1. CONFIG LOAD (YAML Structure Inference)
   useEffect(() => {
-        if (!authenticated) return;
-    if (activeModel === "Generator" || activeModel === "Plant Overview") {
-        setSystemPrefix("");
-        setConfigLoaded(true);
-        return;
-    }
+    let cancelled = false;
+    void apiMe().then(me => {
+      if (cancelled) return;
+      if (me.authenticated && me.username && me.role) {
+        setAuthenticated(true); setUsername(me.username); setRole(me.role); setForcePasswordChange(me.force_password_change);
+      }
+    }).catch(cause => { if (!cancelled) setAuthError(runtimeError(cause)); })
+      .finally(() => { if (!cancelled) setAuthReady(true); });
+    return () => { cancelled = true; };
+  }, []);
 
-    const controller = new AbortController();
-    const selectedModel = activeModel;
-
-    setConfigLoaded(false);
-    setSystemPrefix("");
-    setCvList([]);
-    setMvList([]);
-    setDvList([]);
-    setDescriptions({});
-
-    fetch(`/api/model?file=${selectedModel}`, { signal: controller.signal })
-      .then(res => res.json())
-      .then((data: ModelConfig) => {
-        if (controller.signal.aborted) return;
-        const nodes = data.nodes;
-        
-        // Find system prefix (e.g., "CSTR_DMC", "Debutanizer_DMC")
-        const systemNode = nodes.find(n => n.node_id.endsWith(":ControlNodes"));
-        const prefix = systemNode ? systemNode.node_id.replace(":ControlNodes", "") : "System";
-        setSystemPrefix(prefix);
-        console.log("🔧 System node prefix:", prefix);
-        
-        // Store prefix in tags so WebSocket handler can access it
-        updateTag({
-          node_id: "_systemPrefix",
-          value: prefix,
-          timestamp: new Date().toISOString(),
-          status: 1
-        });
-        
-        // 1. FILTER: Exclude "System" AND "ControlNodes"
-        const potentialTags = nodes.filter(n => 
-            n.node_class === "Object" && 
-            !n.node_id.endsWith(":ControlNodes")
-        );
-        
-        const allNodeIds = new Set(nodes.map(n => n.node_id));
-        
-        const detectedCVs: string[] = [];
-        const detectedMVs: string[] = [];
-        const detectedDVs: string[] = []; // <--- 1. New Array
-        const descriptionsMap: Record<string, string> = {};
-        
-        potentialTags.forEach(tag => {
-            // Store description if available
-            if (tag.description) {
-                descriptionsMap[tag.node_id] = tag.description;
-            }
-            
-            // CVs have a Prediction array
-            const hasPrediction = allNodeIds.has(`${tag.node_id}:Prediction`);
-            // MVs have a FuturePlan array
-            const hasFuturePlan = allNodeIds.has(`${tag.node_id}:FuturePlan`);
-            
-            if (hasPrediction) {
-                detectedCVs.push(tag.node_id);
-            } else if (hasFuturePlan) {
-                detectedMVs.push(tag.node_id);
-            } else {
-                // <--- 2. UPDATED LOGIC
-                // If it's an Object but has no Prediction or FuturePlan, 
-                // we treat it as a Disturbance Variable (DV).
-                detectedDVs.push(tag.node_id);
-            }
-        });
-
-        setCvList(detectedCVs);
-        setMvList(detectedMVs);
-        setDvList(detectedDVs); // <--- 3. Set State
-        setDescriptions(descriptionsMap);
-                setConfigLoaded(true);
-      })
-      .catch(err => {
-                    if (controller.signal.aborted) return;
-          console.error("Failed to load config:", err);
-                    setSystemPrefix("");
-          setConfigLoaded(true);
-      });
-
-        return () => {
-            controller.abort();
-        };
-        }, [activeModel, authenticated]);
-
-  // 2. WEBSOCKET
   useEffect(() => {
-        if (!authenticated) return;
-    // Persistent WebSocket connection - Initialize once
-    if (ws.current) return;
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host; 
-    const url = `${protocol}//${host}/ws`;
-    
-    const socket = new WebSocket(url);
-    ws.current = socket;
-
-    socket.onopen = () => {
-        setWsConnected(true);
-        // Ask backend to refresh data immediately
-        if (ws.current) {
-            ws.current.send(JSON.stringify({ type: "REFRESH" }));
-        }
-    };
-
-    socket.onclose = () => { 
-        setWsConnected(false);
-        ws.current = null;
-    };
-    
-    socket.onmessage = (event) => {
+    if (!authenticated) return;
+    let cancelled = false;
+    async function refreshSession() {
       try {
-        const msg: OpcUpdate = JSON.parse(event.data);
-        updateTag(msg); // Use Zustand store update
-        
-        // IMPORTANT: Only update toggles if this is the active model's OperatingMode
-        if (msg.node_id.endsWith(":OperatingMode")) {
-             const msgPrefix = msg.node_id.replace(":OperatingMode", "");
-             const currentPrefix = useTagStore.getState().tags["_systemPrefix"]?.value;
-             if (currentPrefix && msgPrefix === currentPrefix) {
-                 const mode = Number(msg.value);
-                 // console.log(`🎛️  OperatingMode received: ${mode} from ${msg.node_id} (active model)`);
-                 setCalcOn(mode >= 1);
-                 setControlEnable(mode === 2);
-             }
+        const me = await apiMe();
+        if (cancelled) return;
+        if (!me.authenticated || !me.username || !me.role) {
+          setAuthenticated(false); setUsername(''); setRole('viewer'); setCapabilities(null);
+          setForcePasswordChange(false); setAuthError('登入已過期。重新登入後可查詢伺服器保存的任務與操作。');
+          return;
         }
-      } catch (e) { console.error(e); }
-    };
-    
-    return () => { 
-        // In development (Strict Mode), effects run twice. 
-        // We want to keep the connection if possible, or close it cleanly.
-        socket.close();
-        ws.current = null;
-    };
-    }, [authenticated]); // Dependency array empty -> Run once on mount
+        setUsername(me.username); setRole(me.role); setForcePasswordChange(me.force_password_change);
+      } catch { /* A failed refresh does not claim logout or change controller state. */ }
+    }
+    const onVisible = () => { if (document.visibilityState === 'visible') void refreshSession(); };
+    const timer = window.setInterval(() => void refreshSession(), 5 * 60 * 1000);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, [authenticated]);
 
-  // 3. SYNC TOGGLE STATES FROM OPC UA VALUES (Initial Load Only)
   useEffect(() => {
-    if (!systemPrefix) return;
-    
-    const opModeNode = `${systemPrefix}:OperatingMode`;
-    const opModeValue = useTagStore.getState().tags[opModeNode]?.value;
-    
-    if (opModeValue !== undefined) {
-      const mode = Number(opModeValue);
-      setCalcOn(mode >= 1);
-      setControlEnable(mode === 2);
-      console.log(`🔄 Synced toggles from OPC UA: mode=${mode}, calcOn=${mode >= 1}, controlEnable=${mode === 2}`);
-    }
-  }, [systemPrefix]); // Only run when systemPrefix changes (model switch)
+    if (!authenticated) return;
+    const controller = new AbortController();
+    setCapabilityLoading(true); setCapabilityError('');
+    void workspaceRequest<WorkspaceCapabilities>('/api/workspace', undefined, controller.signal).then(value => {
+      if (controller.signal.aborted) return;
+      if (typeof value.runtime_enabled !== 'boolean' || typeof value.research_enabled !== 'boolean' || !Array.isArray(value.scopes)
+        || !['isolated_research', 'local_test_runtime', 'field_runtime'].includes(value.deployment_kind)
+        || !value.capabilities || value.user?.username !== username || !Array.isArray(value.limitations)) throw new Error('部署能力或登入身分不一致，不能啟用操作。');
+      setCapabilities(value);
+      setMode(current => !value.runtime_enabled && value.research_enabled && canResearch ? 'modeling' : current === 'modeling' && (!value.research_enabled || !canResearch) ? 'runtime' : current);
+    }).catch(cause => { if (!controller.signal.aborted) { setCapabilities(null); setCapabilityError(runtimeError(cause)); } })
+      .finally(() => { if (!controller.signal.aborted) setCapabilityLoading(false); });
+    return () => controller.abort();
+  }, [authenticated, username, role, canResearch, capabilityRevision]);
 
-  // 4. CONTROLLER LIVENESS CHECK
   useEffect(() => {
-    if (!systemPrefix) return;
-    
-    // Check controller signal freshness every 5 seconds.
-    const interval = setInterval(() => {
-        const liveness = getControllerLiveness();
-        setDataStale(!liveness.isFresh);
-    }, 5000);
+    const dialog = passwordDialog.current;
+    if (authenticated && (showPasswordDialog || forcePasswordChange)) { if (dialog && !dialog.open) dialog.showModal(); }
+    else if (dialog?.open) dialog.close();
+  }, [authenticated, showPasswordDialog, forcePasswordChange]);
 
-    return () => clearInterval(interval);
-  }, [systemPrefix]);
+  async function onLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (authBusy) return;
+    setAuthBusy(true); setAuthError('');
+    try {
+      const result = await apiLogin(loginUser.trim(), loginPassword);
+      setAuthenticated(true); setUsername(result.username); setRole(result.role);
+      setForcePasswordChange(result.force_password_change); setLoginPassword('');
+    } catch (cause) { setAuthError(runtimeError(cause)); }
+    finally { setAuthBusy(false); }
+  }
+  async function onLogout() {
+    if (researchContext.dirty && !window.confirm('有未儲存的建模草稿。登出會捨棄本分頁草稿；伺服器任務不會停止。仍要登出？')) return;
+    try { await apiLogout(); }
+    catch (cause) { setCapabilityError(`登出未確認：${runtimeError(cause)}`); return; }
+    setAuthenticated(false); setUsername(''); setRole('viewer'); setCapabilities(null);
+    setForcePasswordChange(false); setShowPasswordDialog(false); setResearchContext({ datasetId: '', studyId: '', runId: '', sourceLabel: '尚未選取資料', versionLabel: '尚未選取研究版本', dirty: false });
+  }
+  async function onChangePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (authBusy) return;
+    if ((!forcePasswordChange && !currentPassword) || newPassword.length < 8) { setPasswordStatus('請填寫目前密碼，且新密碼至少 8 字元。'); return; }
+    setAuthBusy(true); setPasswordStatus('');
+    try {
+      await apiChangePassword(forcePasswordChange ? '' : currentPassword, newPassword);
+      const me = await apiMe();
+      if (!me.authenticated || !me.username || !me.role) { setAuthenticated(false); setCapabilities(null); setAuthError('密碼已變更，請重新登入。'); }
+      else { setUsername(me.username); setRole(me.role); setForcePasswordChange(me.force_password_change); }
+      setShowPasswordDialog(false); setCurrentPassword(''); setNewPassword('');
+    } catch (cause) { setPasswordStatus(runtimeError(cause)); }
+    finally { setAuthBusy(false); }
+  }
+  function selectPage(id: string) {
+    if (mode === 'runtime' && runtimePages.some(item => item.id === id)) setRuntimePage(id as RuntimePage);
+    if (mode === 'modeling' && modelingPages.some(item => item.id === id)) setModelingPage(id as ModelingPage);
+  }
 
-    // 5. CONTROLLER RUNNING STATUS (from /api/prox/controllers)
-    useEffect(() => {
-        if (!authenticated) return;
+  if (!authReady) return <div role="status" className="flex h-dvh items-center justify-center bg-slate-950 text-slate-300">正在確認登入狀態…</div>;
+  if (!authenticated) return <main className="flex min-h-dvh items-center justify-center bg-slate-950 p-5 text-slate-100"><form onSubmit={event => void onLogin(event)} className="w-full max-w-md space-y-4 rounded-xl border border-slate-700 bg-slate-900 p-6"><h1 className="text-xl font-semibold">AuTHRity · 水泥磨工作區</h1><p className="text-sm text-slate-400">登入後依部署能力與授權進入 Runtime 或隔離建模。</p><label className="block space-y-1 text-sm">帳號<input className={control} autoComplete="username" value={loginUser} onChange={event => setLoginUser(event.target.value)} required /></label><label className="block space-y-1 text-sm">密碼<input type="password" className={control} autoComplete="current-password" value={loginPassword} onChange={event => setLoginPassword(event.target.value)} required /></label>{authError && <p role="alert" className="break-words text-sm text-rose-300">{authError}</p>}<button type="submit" disabled={authBusy} className={`${button} w-full border-indigo-600 bg-indigo-700`}>{authBusy ? '登入中…' : '登入'}</button></form></main>;
 
-        const isControllerView = activeModel !== "Generator" && activeModel !== "Plant Overview" && activeModel !== "Settings";
-        if (!isControllerView) {
-            setControllerRunning(null);
-            setControllerSummary(null);
-            return;
-        }
-
-        const parseIsRunning = (state: any): boolean => {
-            if (typeof state === 'string') {
-                return state.toLowerCase() === 'running';
-            }
-            if (state && typeof state === 'object') {
-                return Object.prototype.hasOwnProperty.call(state, 'Running');
-            }
-            return false;
-        };
-
-        let isCancelled = false;
-
-        const refreshControllerState = async () => {
-            try {
-                const res = await fetch('/api/prox/controllers');
-                if (!res.ok) return;
-
-                const controllers = await res.json();
-                if (isCancelled || !Array.isArray(controllers)) return;
-
-                const target = controllers.find((controller: any) =>
-                    controller?.id === activeModel || (systemPrefix && controller?.id === systemPrefix)
-                );
-
-                if (!target) {
-                    setControllerRunning(false);
-                    setControllerSummary(null);
-                    return;
-                }
-
-                setControllerRunning(parseIsRunning(target.state));
-                setControllerSummary(target);
-            } catch {
-            }
-        };
-
-        refreshControllerState();
-        const interval = setInterval(refreshControllerState, 5000);
-
-        return () => {
-            isCancelled = true;
-            clearInterval(interval);
-        };
-    }, [authenticated, activeModel, systemPrefix]);
-
-  const handleWrite = (nodeId: string, newValue: string | number | boolean) => {
-        if (!hasRoleAtLeast(role, 'operator')) return;
-    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
-    
-    let payload: any;
-    if (typeof newValue === 'string') {
-      payload = { type: "WRITE", nodeId: nodeId, value: newValue };
-    } else if (typeof newValue === 'boolean') {
-      payload = { type: "WRITE", nodeId: nodeId, value: newValue };
-    } else {
-      payload = { type: "WRITE", nodeId: nodeId, value: Number(newValue) };
-    }
-    
-    ws.current.send(JSON.stringify(payload));
-  };
-
-  const getStatusColor = () => {
-    if (!wsConnected) return "bg-red-500"; 
-
-        if (systemPrefix) {
-            if (controllerRunning === false) return "bg-red-500";
-            if (controllerRunning === null) return "bg-amber-500 animate-pulse";
-
-            const liveness = getControllerLiveness();
-            if (!liveness.isFresh || dataStale) return "bg-amber-500 animate-pulse";
-            return "bg-emerald-500";
-        }
-
-        if (dataStale) return "bg-amber-500 animate-pulse";
-    const plcStatus = useTagStore.getState().tags["System:PlcConnection"]?.value;
-    if (plcStatus === 1) return "bg-emerald-500"; 
-    return "bg-amber-500 animate-pulse"; 
-  };
-
-  const getStatusText = () => {
-      if (!wsConnected) return "Server Disconnected";
-
-            if (systemPrefix) {
-          if (controllerRunning === false) return "System Offline";
-          if (controllerRunning === null) return "Checking controller...";
-
-                                        const liveness = getControllerLiveness();
-                                        if (!liveness.nodeId) return "Data Stale (No Live Controller Signals)";
-                                        if (!liveness.isFresh || dataStale) return "Data Stale (Controller Updates Delayed)";
-                    return "System Online";
-            }
-
-            if (dataStale) return "Data Stale (Heartbeat Lost)";
-      const plcStatus = useTagStore.getState().tags["System:PlcConnection"]?.value;
-      if (plcStatus === 1) return "System Online";
-      return "Connecting to PLC...";
-  };
-
-  const handleToggleMode = (isCalc: boolean, isControl: boolean) => {
-      if (!hasRoleAtLeast(role, 'operator')) return;
-      if (!systemPrefix) return;
-      let newMode = 0;
-      if (isCalc && !isControl) newMode = 1;
-      if (isCalc && isControl) newMode = 2;
-      setCalcOn(isCalc);
-      setControlEnable(isControl);
-      const nodeId = `${systemPrefix}:OperatingMode`;
-      console.log(`📩 Web Command: Write ${newMode} to ${nodeId}`);
-      handleWrite(nodeId, newMode);
-  };
-
-    const canOperate = hasRoleAtLeast(role, 'operator');
-    const canEngineer = hasRoleAtLeast(role, 'engineer');
-    const canAdmin = role === 'admin';
-
-    const tabs = canEngineer
-        ? ["Overview", "Trends", "Models", "Tuning", "Manage", "Details"]
-        : canOperate
-            ? ["Overview", "Trends", "Models", "Tuning", "Details"]
-            : ["Overview", "Trends", "Models", "Details"];
-
-    useEffect(() => {
-        if (!tabs.includes(activeTab)) {
-            setActiveTab(tabs[0]);
-        }
-    }, [activeTab, tabs]);
-
-    const onLogin = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setAuthError('');
-        try {
-            const result = await apiLogin(loginUser.trim(), loginPassword);
-            setAuthenticated(true);
-            setUsername(result.username);
-            setRole(result.role);
-            setForcePasswordChange(result.force_password_change);
-            setLoginPassword('');
-        } catch (error: any) {
-            setAuthError(error?.message || 'Login failed');
-        }
-    };
-
-    const onLogout = async () => {
-        try {
-            await apiLogout();
-        } finally {
-            setAuthenticated(false);
-            setUsername('');
-            setRole('viewer');
-            setForcePasswordChange(false);
-            setShowPasswordDialog(false);
-            if (ws.current) {
-                ws.current.close();
-                ws.current = null;
-            }
-        }
-    };
-
-    const openChangePassword = () => {
-        setPasswordStatus('');
-        setCurrentPassword('');
-        setNewPassword('');
-        setShowPasswordDialog(true);
-    };
-
-    const onChangePassword = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setPasswordStatus('');
-        if (!forcePasswordChange && !currentPassword.trim()) {
-            setPasswordStatus('❌ Current password is required');
-            return;
-        }
-        if (newPassword.trim().length < 8) {
-            setPasswordStatus('❌ New password must be at least 8 characters');
-            return;
-        }
-
-        try {
-            await apiChangePassword(forcePasswordChange ? '' : currentPassword, newPassword.trim());
-            const me = await apiMe();
-            if (!me.authenticated || !me.username || !me.role) {
-                setAuthenticated(false);
-                setUsername('');
-                setRole('viewer');
-                setForcePasswordChange(false);
-                setShowPasswordDialog(false);
-                setPasswordStatus('✅ Password changed. Please sign in again.');
-                return;
-            }
-
-            setAuthenticated(true);
-            setUsername(me.username);
-            setRole(me.role);
-            setForcePasswordChange(me.force_password_change);
-            setShowPasswordDialog(false);
-            setCurrentPassword('');
-            setNewPassword('');
-            setPasswordStatus('✅ Password changed');
-        } catch (error: any) {
-            setPasswordStatus(error?.message || '❌ Password change failed');
-        }
-    };
-
-    if (!authReady) {
-        return <div className="h-screen bg-slate-950 flex items-center justify-center text-slate-400">Loading session...</div>;
-    }
-
-    if (!authenticated) {
-        return (
-            <div className="h-screen bg-slate-950 flex items-center justify-center text-slate-200">
-                <form onSubmit={onLogin} className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
-                      <h1 className="text-xl font-bold text-white">AuTHRity Login</h1>
-                    <input
-                        value={loginUser}
-                        onChange={(e) => setLoginUser(e.target.value)}
-                        placeholder="Username"
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2"
-                    />
-                    <input
-                        type="password"
-                        value={loginPassword}
-                        onChange={(e) => setLoginPassword(e.target.value)}
-                        placeholder="Password"
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2"
-                    />
-                    {authError && <div className="text-rose-400 text-sm">{authError}</div>}
-                    <button className="w-full bg-indigo-600 hover:bg-indigo-500 rounded py-2 font-bold">Sign in</button>
-                </form>
-            </div>
-        );
-    }
-
-    if (!configLoaded && activeModel !== "Generator" && activeModel !== "Plant Overview") return <div className="h-screen bg-slate-900 flex items-center justify-center text-slate-500">Loading Configuration...</div>;
-
-  return (
-    <div className="flex h-screen bg-slate-950 font-mono text-slate-200 overflow-hidden">
-      
-            <Sidebar
-                activeModel={activeModel}
-                onSelect={setActiveModel}
-                allowGenerator={canEngineer}
-                allowSettings={canEngineer}
-                username={username}
-                role={role}
-                onChangePassword={openChangePassword}
-                onLogout={onLogout}
-            />
-
-      <div className="flex-1 flex flex-col h-screen overflow-hidden">
-        
-        {/* --- VIEW SWITCHER --- */}
-        {activeModel === "Generator" ? (
-            canEngineer ? <ModelGenerator /> : <div className="h-full flex items-center justify-center text-slate-500">Forbidden</div>
-        ) : activeModel === "Settings" ? (
-            canEngineer ? <SettingsView isAdmin={canAdmin} /> : <div className="h-full flex items-center justify-center text-slate-500">Forbidden</div>
-        ) : activeModel === "Plant Overview" ? (
-            <PlantOverview wsRef={ws} onSelectModel={setActiveModel} />
-        ) : (
-            <>
-                <header className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-8 shadow-sm z-10 shrink-0">
-                <div>
-                    <h2 className="text-xl font-bold text-white tracking-tight">{activeModel}</h2>
-                    <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
-                        <span className={`w-2 h-2 rounded-full transition-colors duration-500 ${getStatusColor()}`}></span>
-                        {getStatusText()}
-                    </div>
-                </div>
-                </header>
-
-                <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/50 px-8 shrink-0">
-                    <TabNavigation 
-                        tabs={tabs} 
-                        activeTab={activeTab} 
-                        onTabChange={setActiveTab} 
-                    />
-
-                    <div className="flex items-center gap-6 py-2">
-                        <NextRunDisplay systemPrefix={systemPrefix} />
-                        <div className="w-px h-8 bg-slate-700/50"></div>
-                        <ToggleSwitch 
-                            label="Calculator"  
-                            enabled={calcOn} 
-                            onToggle={(val) => {
-                                if (!val) handleToggleMode(false, false);
-                                else handleToggleMode(true, controlEnable);
-                            }} 
-                            colorOn="bg-blue-500"
-                            disabled={!canOperate || !systemPrefix}
-                        />
-                        <div className="w-px h-8 bg-slate-700/50"></div>
-                        <ToggleSwitch 
-                            label="Control Action" 
-                            enabled={controlEnable} 
-                            onToggle={(val) => {
-                                if (val) handleToggleMode(true, true);
-                                else handleToggleMode(calcOn, false);
-                            }} 
-                            colorOn="bg-emerald-500"
-                            disabled={!canOperate || !systemPrefix}
-                        />
-                    </div>
-                </div>
-
-                <main className="flex-1 overflow-y-auto p-8">
-                    {activeTab === "Overview" && (
-                        <div className="animate-in fade-in duration-300">
-                            {/* CV TABLE */}
-                            <ProcessTable 
-                                title="Controlled Variables (CVs)" 
-                                rowHeaders={cvList} 
-                                descriptions={descriptions}
-                                wsRef={ws} 
-                                currentRole={role}
-                                columns={[
-                                    { header: "Description", suffix: "Description" },
-                                    { header: "Status", suffix: "Status" },
-                                    { header: "Low", suffix: "LowLimit" },
-                                    { header: "PV", suffix: "PV" },
-                                    { header: "Target", suffix: "Target" },
-                                    { header: "Steady", suffix: "SteadyState" },
-                                    { header: "High", suffix: "HighLimit" },
-                                ]}
-                            />
-                            {/* --- ADDED: DV TABLE --- */}
-                            {dvList.length > 0 && (
-                                <ProcessTable 
-                                    title="Disturbance Variables (DVs)" 
-                                    rowHeaders={dvList} 
-                                    descriptions={descriptions}
-                                    wsRef={ws} 
-                                    currentRole={role}
-                                    columns={[
-                                        { header: "Low",    suffix: "LowLimit" },
-                                        { header: "PV",     suffix: "PV" },
-                                        { header: "High",   suffix: "HighLimit" },
-                                    ]}
-                                />
-                            )}
-
-                            {/* MV TABLE */}
-                            <ProcessTable 
-                                title="Manipulated Variables (MVs)" 
-                                rowHeaders={mvList} 
-                                descriptions={descriptions}
-                                wsRef={ws}
-                                currentRole={role}
-                                columns={[
-                                    { header: "Description", suffix: "Description" },
-                                    { header: "Status", suffix: "Status" },
-                                    { header: "Low", suffix: "LowLimit" },
-                                    { header: "PV", suffix: "PV" },
-                                    { header: "SP", suffix: "SP" },
-                                    { header: "Target", suffix: "Target" },
-                                    { header: "Steady", suffix: "SteadyState" },
-                                    { header: "High", suffix: "HighLimit" },
-                                    { header: "Move", suffix: "LastMove" },
-                                ]}
-                            />
-
-                            {/* PREDICTION GRAPH */}
-                            <PredictionGraph 
-                                cvList={cvList}
-                                mvList={mvList}
-                                sampleTime={20}
-                            />
-                        </div>
-                    )}
-                    {activeTab === "Trends" && (
-                        <div className="animate-in fade-in duration-300">
-                            <TrendsTab 
-                                cvList={cvList}
-                                mvList={mvList}
-                                dvList={dvList}
-                                descriptions={descriptions}
-                            />
-                        </div>
-                    )}
-                    {activeTab === "Models" && (
-                        <div className="animate-in fade-in duration-300">
-                            <ModelsTab controllerId={systemPrefix} />
-                        </div>
-                    )}
-                    {activeTab === "Tuning" && (
-                        <div className="animate-in fade-in duration-300">
-                            <TuningTab 
-                                cvList={cvList}
-                                mvList={mvList}
-                                descriptions={descriptions}
-                                wsRef={ws}
-                                systemPrefix={systemPrefix}
-                            />
-                        </div>
-                    )}
-                    {activeTab === "Manage" && (
-                        <div className="animate-in fade-in duration-300">
-                            <ManageTab 
-                                systemPrefix={systemPrefix}
-                                wsRef={ws}
-                                cvList={cvList}
-                                mvList={mvList}
-                                dvList={dvList}
-                            />
-                        </div>
-                    )}
-                    {activeTab === "Details" && (
-                        <div className="h-full flex flex-col">
-                            <ControllerDiagnostics
-                                controllerId={systemPrefix || activeModel}
-                                summary={controllerSummary}
-                            />
-                        </div>
-                    )}
-                    <div className="text-center text-xs text-slate-600 mt-8 mb-4">
-                        AuTHRity Web HMI v0.4 • Powered by Rust & React
-                    </div>
-                </main>
-            </>
-        )}
-      </div>
-
-            {(forcePasswordChange || showPasswordDialog) && (
-                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-                    <form onSubmit={onChangePassword} className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-xl p-6 space-y-4">
-                        <h3 className="text-lg font-bold text-white">{forcePasswordChange ? 'Password Update Required' : 'Change Password'}</h3>
-                        <p className="text-xs text-slate-400">
-                            {forcePasswordChange
-                                ? 'You must set a new password before continuing. Current password is not required.'
-                                : 'Update your account password.'}
-                        </p>
-                        {!forcePasswordChange && (
-                            <input
-                                type="password"
-                                value={currentPassword}
-                                onChange={(e) => setCurrentPassword(e.target.value)}
-                                placeholder="Current password"
-                                className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2"
-                            />
-                        )}
-                        <input
-                            type="password"
-                            value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
-                            placeholder="New password"
-                            className="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2"
-                        />
-                        {passwordStatus && <div className="text-sm text-slate-300">{passwordStatus}</div>}
-                        <div className="flex items-center gap-2">
-                            {!forcePasswordChange && (
-                                <button
-                                    type="button"
-                                    onClick={() => setShowPasswordDialog(false)}
-                                    className="flex-1 bg-slate-800 hover:bg-slate-700 rounded py-2 font-bold"
-                                >
-                                    Cancel
-                                </button>
-                            )}
-                            <button className="flex-1 bg-indigo-600 hover:bg-indigo-500 rounded py-2 font-bold">
-                                Update Password
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            )}
+  return <div className="flex h-dvh overflow-hidden bg-slate-950 font-sans text-slate-100">
+    <Sidebar mode={mode} pages={pages} activePage={pageId} onSelect={selectPage} username={username} role={role} onLogout={() => void onLogout()} onChangePassword={() => { setPasswordStatus(''); setCurrentPassword(''); setNewPassword(''); setShowPasswordDialog(true); }} />
+    <div className="flex min-w-0 flex-1 flex-col">
+      <header className="shrink-0 border-b border-slate-700 bg-slate-950 px-3 py-3 sm:px-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2"><strong className="mr-2">水泥磨</strong><button type="button" className={`${button} ${mode === 'runtime' ? 'border-indigo-500 text-indigo-200' : ''}`} aria-pressed={mode === 'runtime'} disabled={!capabilities?.runtime_enabled} onClick={() => setMode('runtime')}>Runtime · {capabilities?.deployment_kind === 'local_test_runtime' ? '隔離測試' : capabilities?.deployment_kind === 'field_runtime' ? '現場' : '來源待核對'}</button><button type="button" className={`${button} ${mode === 'modeling' ? 'border-indigo-500 text-indigo-200' : ''}`} aria-pressed={mode === 'modeling'} disabled={!canResearch || !capabilities?.research_enabled} onClick={() => setMode('modeling')}>建模 · 隔離研究</button></div>
+          <span className="rounded border border-amber-800 px-2 py-1 text-xs text-amber-200">{mode === 'modeling' ? '無現場寫入通路' : capabilities?.deployment_kind === 'local_test_runtime' ? '隔離模擬環境 · 不是工廠投運證據' : '控制權由後端獨立確認'}</span>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400" aria-label="工作區來源與版本"><span>{mode === 'modeling' ? researchContext.sourceLabel : runtimeContext.sourceLabel}</span><span>{mode === 'modeling' ? researchContext.versionLabel : runtimeContext.versionLabel}</span><span>{mode === 'modeling' ? researchContext.dirty ? '有未儲存草稿' : '研究版本／資料明確選取' : runtimeContext.targetLabel}</span>{mode === 'runtime' && <span>{runtimeContext.observedAt ? `狀態確認：${runtimeContext.observedAt}` : '資料時刻未知'} · {runtimeContext.health}</span>}</div>
+      </header>
+      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto pb-24 md:pb-6" aria-label="水泥磨工作區">
+        <div className="flex flex-wrap items-start justify-between gap-3 px-3 pb-2 pt-4 sm:px-5"><div><h1 className="text-lg font-semibold">{page.label}</h1><p className="mt-1 text-xs text-slate-400">{page.purpose}</p></div><div className="flex flex-wrap gap-2"><button type="button" className={button} aria-expanded={scene.visible} onClick={scene.toggle}>{scene.visible ? '收合設備' : '顯示設備'}</button><button type="button" className={button} onClick={scene.restore}>恢復本頁預設</button></div></div>
+        {capabilityLoading && <p role="status" className="px-5 py-2 text-sm text-slate-400">正在讀取部署能力…</p>}
+        {capabilityError && <div role="alert" className="m-3 space-y-2 rounded border border-rose-800 p-3 text-sm text-rose-200"><p>{capabilityError}</p><button type="button" className={button} disabled={capabilityLoading} onClick={() => setCapabilityRevision(value => value + 1)}>重新查詢部署能力</button></div>}
+        {capabilities && <>
+          <div hidden={mode !== 'runtime'} inert={mode !== 'runtime'} style={mode !== 'runtime' ? { display: 'none' } : undefined}>
+            <RuntimeWorkspace section={runtimePage} active={mode === 'runtime'} sceneVisible={mode === 'runtime' && scene.visible} capabilities={capabilities} onContextChange={setRuntimeContext} onNavigate={setRuntimePage} />
+          </div>
+          {canResearch && capabilities.research_enabled && <div hidden={mode !== 'modeling'} inert={mode !== 'modeling'} style={mode !== 'modeling' ? { display: 'none' } : undefined}><Autoresearch section={modelingPage} onSectionChange={setModelingPage} sceneVisible={mode === 'modeling' && scene.visible} active={mode === 'modeling'} onContextChange={setResearchContext} /></div>}
+          {!capabilities.runtime_enabled && (!canResearch || !capabilities.research_enabled) && <p className="m-3 rounded border border-amber-700 p-4 text-sm text-amber-200">此部署未啟用現場 Runtime；目前帳號亦無可用的建模工作區。請由管理員確認部署能力與角色，不會自動建立現場連線。</p>}
+        </>}
+      </main>
     </div>
-  );
+    <dialog ref={passwordDialog} onCancel={event => { if (forcePasswordChange) event.preventDefault(); else setShowPasswordDialog(false); }} className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-xl border border-slate-700 bg-slate-900 p-6 text-slate-100 backdrop:bg-black/70"><form onSubmit={event => void onChangePassword(event)} className="space-y-4"><h2 className="text-lg font-semibold">{forcePasswordChange ? '首次登入：請設定新密碼' : '更改密碼'}</h2>{!forcePasswordChange && <label className="block text-sm">目前密碼<input type="password" autoComplete="current-password" className={control} value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} required /></label>}<label className="block text-sm">新密碼（至少 8 字元）<input type="password" autoComplete="new-password" className={control} value={newPassword} onChange={event => setNewPassword(event.target.value)} minLength={8} required /></label>{passwordStatus && <p role="alert" className="break-words text-sm text-amber-200">{passwordStatus}</p>}<div className="flex gap-2">{!forcePasswordChange && <button type="button" className={button} onClick={() => setShowPasswordDialog(false)}>取消</button>}<button className={`${button} flex-1 bg-indigo-700`} type="submit" disabled={authBusy}>{authBusy ? '更新中…' : '更新密碼'}</button></div></form></dialog>
+  </div>;
 }
 
 export default App;

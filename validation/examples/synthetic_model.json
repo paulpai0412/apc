@@ -1,0 +1,13 @@
+{
+  "metadata": {"name": "SyntheticFIR", "description": "SYNTHETIC SOFTWARE FIXTURE ONLY. Not cement, mill, kiln, or production data.", "version": "1.0", "model_type": "step_response"},
+  "tuning": {"prediction_horizon": 20, "control_horizon": 5, "sample_time": 1.0, "solver_tolerance": 0.00001, "max_iterations": 200, "terminal_weight_factor": 1.0},
+  "variables": {
+    "cvs": [{"name": "SyntheticQuality", "description": "Synthetic output", "units": "arb", "weight": 1.0, "alpha": 0.2, "ece_factor": 1.0, "optimization_mode": {"type": "Target", "value": 0.5}, "slack_weight": 1000.0, "is_integrating": false, "limits": {"low_low": -10.0, "low": -2.0, "target": 0.5, "high": 2.0, "high_high": 10.0}, "node_ids": {"pv": "SyntheticQuality:PV", "target": "SyntheticQuality:Target", "prediction": "SyntheticQuality:Prediction", "limits": {"high": "SyntheticQuality:HighLimit", "low": "SyntheticQuality:LowLimit", "hh": "SyntheticQuality:HighHighLimit", "ll": "SyntheticQuality:LowLowLimit"}}}],
+    "mvs": [{"name": "SyntheticFeed", "description": "Synthetic actuator", "units": "arb", "weight_r": 0.2, "max_move": 0.3, "target_weight": 0.0, "limits": {"low_low": -5.0, "low": -2.0, "high": 2.0, "high_high": 5.0}, "node_ids": {"pv": "SyntheticFeed:PV", "sp": "SyntheticFeed:SP", "op": "SyntheticFeed:OP", "mode": "SyntheticFeed:Mode", "mode_target": "SyntheticFeed:ModeTarget", "future_plan": "SyntheticFeed:FuturePlan", "limits": {"high": "SyntheticFeed:HighLimit", "low": "SyntheticFeed:LowLimit", "hh": "SyntheticFeed:HighHighLimit", "ll": "SyntheticFeed:LowLowLimit"}}}],
+    "dvs": [{"name": "SyntheticDisturbance", "description": "Synthetic disturbance", "units": "arb", "limits": {"low": -2.0, "high": 2.0}, "node_ids": {"pv": "SyntheticDisturbance:PV", "limits": {"high": "SyntheticDisturbance:HighLimit", "low": "SyntheticDisturbance:LowLimit"}}}]
+  },
+  "physics": {
+    "step_coefficients": [[[0.0, 0.5, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]]],
+    "dv_coefficients": [[[0.0, -0.2, -0.3, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4]]]
+  }
+}

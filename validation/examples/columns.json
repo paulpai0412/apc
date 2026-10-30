@@ -1,0 +1,15 @@
+{
+  "timestamp": {"column": "time_seconds", "format": "seconds"},
+  "sample_time": 1.0,
+  "encoding": "utf-8",
+  "delimiter": ",",
+  "cv": ["SyntheticQuality"],
+  "mv": ["SyntheticFeed"],
+  "dv": ["SyntheticDisturbance"],
+  "provenance": {
+    "source_url": "synthetic://AuTHRity-APC/validation/generate_fixture.py",
+    "license": "Repository license; generated synthetic software test fixture",
+    "synthetic": true,
+    "description": "NOT cement mill data. NOT kiln data. No real process measurements."
+  }
+}

@@ -1,630 +1,167 @@
-import React, { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
 import { Download } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { runtimeVariables, identificationInput } from '../lib/modelBinding';
+import { opcQuality } from '../lib/historianTrends';
+import type { HistoryEnvelope } from '../lib/historianTrends';
+import type { ModelBinding } from '../types/ModelBinding';
 
-interface TimeSeriesPoint {
-  timestamp: string;
-  value: number;
+interface StepResponseToolProps { modelBinding: ModelBinding | null; tssMin: number }
+interface HistorySample { time: number; value: number | null }
+interface CvResponse { cv_node: string; cv_baseline: number; coefficients: number[]; raw_response: [number, number][]; fitted_response: [number, number][] }
+interface StepResponse { mv_baseline: number; step_size: number; step_time: string; responses: CvResponse[] }
+const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+function decodeResponse(value: unknown): StepResponse {
+  const pairs = (values: unknown) => Array.isArray(values) && values.every(pair => Array.isArray(pair) && pair.length === 2 && pair.every(finite));
+  if (!object(value) || !finite(value.mv_baseline) || !finite(value.step_size) || typeof value.step_time !== 'string' || !Array.isArray(value.responses)
+    || !value.responses.every(row => object(row) && typeof row.cv_node === 'string' && finite(row.cv_baseline) && Array.isArray(row.coefficients) && row.coefficients.every(finite) && pairs(row.raw_response) && pairs(row.fitted_response))) {
+    throw new Error('Step-response result unavailable: invalid calculation response.');
+  }
+  // Every consumed response member was checked above.
+  const result = value as unknown as StepResponse;
+  return result;
 }
+const inputClass = 'w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm';
 
-interface NodeHistory {
-  node_id: string;
-  tag: string;
-  field: string;
-  data: TimeSeriesPoint[];
-}
-
-interface StepResponseToolProps {
-  cvNames: string[];
-  mvNames: string[];
-  dvNames: string[];
-  sampleTime?: number;  // From tuning tab (seconds)
-  tssMin?: number;      // Time to steady state (minutes)
-}
-
-export default function StepResponseTool({ cvNames, mvNames, dvNames, sampleTime = 20, tssMin = 15 }: StepResponseToolProps) {
+export default function StepResponseTool({ modelBinding, tssMin }: StepResponseToolProps) {
+  const variables = useMemo(() => modelBinding ? runtimeVariables(modelBinding) : [], [modelBinding]);
+  const cvs = variables.filter(variable => variable.role === 'CV');
+  const inputs = variables.filter(variable => variable.role !== 'CV');
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
-  const [selectedInput, setSelectedInput] = useState(''); // Either MV or DV
+  const [selectedInput, setSelectedInput] = useState('');
   const [selectedCVs, setSelectedCVs] = useState<string[]>([]);
-  const [historicalData, setHistoricalData] = useState<NodeHistory[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [history, setHistory] = useState<Record<string, HistorySample[]>>({});
   const [stepTime, setStepTime] = useState('');
-  const [baselineDuration, setBaselineDuration] = useState(300); // 5 minutes
-  const [calculatedResponse, setCalculatedResponse] = useState<any>(null);
-  const [baselineTruncated, setBaselineTruncated] = useState(false);
+  const [baselineDuration, setBaselineDuration] = useState(300);
+  const [resultState, setResult] = useState<{ context: string; data: StepResponse } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const input = inputs.find(variable => variable.name === selectedInput);
+  const inputSource = input ? identificationInput(input) : undefined;
+  const outputs = cvs.filter(variable => selectedCVs.includes(variable.name));
+  const sampleTime = modelBinding?.sample_time;
+  const responseDuration = tssMin * 60;
+  const timingValid = finite(sampleTime) && sampleTime > 0 && finite(responseDuration) && responseDuration > 0;
+  const context = JSON.stringify([modelBinding, selectedInput, selectedCVs, startTime, endTime]);
+  const calculationContext = JSON.stringify([context, stepTime, baselineDuration, tssMin]);
+  const activeCalculation = useRef(calculationContext);
+  activeCalculation.current = calculationContext;
+  const result = resultState?.context === calculationContext ? resultState.data : null;
+  const activeContext = useRef(context);
+  activeContext.current = context;
+  useEffect(() => { setHistory({}); setResult(null); setStepTime(''); setError(''); setLoading(false); }, [context]);
+  const startMs = Date.parse(startTime), endMs = Date.parse(endTime), stepMs = Date.parse(stepTime);
+  const baselineTruncated = Number.isFinite(stepMs) && Number.isFinite(startMs) && stepMs - baselineDuration * 1000 < startMs;
+  const traces = [...(input && inputSource ? [{ variable: input, nodeId: inputSource.nodeId }] : []), ...outputs.map(variable => ({ variable, nodeId: variable.nodes.PV }))];
 
-  // Calculate response duration from time to steady state
-  const responseDuration = tssMin * 60; // Convert minutes to seconds
-
-  const loadHistoricalData = async () => {
-    if (!startTime || !endTime) {
-      alert('Please select start and end time');
-      return;
-    }
-
-    if (!selectedInput || selectedCVs.length === 0) {
-      alert('Please select an input variable (MV or DV) and at least one CV');
-      return;
-    }
-
-    setLoading(true);
+  async function loadHistoricalData() {
+    if (!modelBinding || !timingValid || !inputSource || outputs.length === 0) { setError('A valid explicit binding, input, outputs and sample time are required.'); return; }
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) { setError('Select a valid increasing time range.'); return; }
+    const requestedContext = context;
+    setLoading(true); setError(''); setResult(null);
     try {
-      // Build tags list: Input (MV:OP or DV:PV) and CVs:PV
-      const inputNode = mvNames.includes(selectedInput) ? `${selectedInput}:OP` : `${selectedInput}:PV`;
-      const tags = [
-        inputNode,
-        ...selectedCVs.map(cv => `${cv}:PV`)
-      ].join(',');
-
-      const params = new URLSearchParams({
-        tags: tags,
-        start: new Date(startTime).toISOString(),
-        end: new Date(endTime).toISOString()
-      });
-
+      const params = new URLSearchParams({ nodes: JSON.stringify(traces.map(trace => trace.nodeId)), settings: JSON.stringify(input?.role === 'MV' ? [inputSource.nodeId] : []), start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() });
       const response = await apiFetch(`/api/trends?${params}`);
-      if (response.ok) {
-        const data = await response.json();
-        
-        // Transform to NodeHistory format
-        const nodeHistories: NodeHistory[] = [];
-        const groupedByNode: Record<string, TimeSeriesPoint[]> = {};
-        
-        data.forEach((point: any) => {
-          const nodeId = `${point.tag}:${point.field}`;
-          if (!groupedByNode[nodeId]) {
-            groupedByNode[nodeId] = [];
-          }
-          groupedByNode[nodeId].push({
-            timestamp: point.timestamp,
-            value: point.value
-          });
-        });
-        
-        Object.entries(groupedByNode).forEach(([nodeId, points]) => {
-          const [tag, field] = nodeId.split(':');
-          nodeHistories.push({
-            node_id: nodeId,
-            tag: tag,
-            field: field,
-            data: points
-          });
-        });
-        
-        setHistoricalData(nodeHistories);
-        
-        // Auto-detect step time (find largest input change)
-        autoDetectStep(nodeHistories);
-      } else {
-        alert('Failed to load data: ' + await response.text());
+      if (!response.ok) throw new Error(await response.text());
+      const envelope: HistoryEnvelope = await response.json();
+      if (!Array.isArray(envelope.points) || envelope.points.some(point => typeof point.node_id !== 'string')) throw new Error('Historian response lacks authoritative node_id values.');
+      if (requestedContext !== activeContext.current) return;
+      const grouped: Record<string, HistorySample[]> = Object.fromEntries(traces.map(trace => [trace.nodeId, []]));
+      for (const point of envelope.points) {
+        const id = point.node_id;
+        if (!Object.hasOwn(grouped, id)) continue;
+        const time = Date.parse(point.timestamp);
+        if (!Number.isFinite(time)) continue;
+        grouped[id].push({ time, value: finite(point.value) && opcQuality(point.status) === 'good' ? point.value : null });
       }
-    } catch (error) {
-      console.error('Failed to load historical data:', error);
-      alert('Error loading data');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const autoDetectStep = (data: NodeHistory[]) => {
-    // Find input variable data (MV:OP or DV:PV)
-    const inputNode = mvNames.includes(selectedInput) ? `${selectedInput}:OP` : `${selectedInput}:PV`;
-    const inputData = data.find(d => d.node_id === inputNode);
-    if (!inputData || inputData.data.length < 2) return;
-
-    // Find largest change between consecutive points
-    let maxChange = 0;
-    let stepIdx = 0;
-
-    for (let i = 1; i < inputData.data.length; i++) {
-      const change = Math.abs(inputData.data[i].value - inputData.data[i - 1].value);
-      if (change > maxChange) {
-        maxChange = change;
-        stepIdx = i;
+      for (const points of Object.values(grouped)) points.sort((a, b) => a.time - b.time);
+      setHistory(grouped);
+      const source = grouped[inputSource.nodeId];
+      let biggest = 0, detected: number | undefined;
+      for (let index = 1; index < source.length; index++) {
+        const before = source[index - 1].value, after = source[index].value;
+        if (before === null || after === null) continue;
+        const change = Math.abs(after - before);
+        if (change > biggest) { biggest = change; detected = source[index].time; }
       }
-    }
+      if (detected !== undefined) setStepTime(new Date(detected).toISOString());
+    } catch (cause) { if (requestedContext === activeContext.current) setError(cause instanceof Error ? cause.message : 'History request failed.'); }
+    finally { if (requestedContext === activeContext.current) setLoading(false); }
+  }
 
-    if (maxChange > 0.5) {  // Threshold for detecting a step
-      setStepTime(inputData.data[stepIdx].timestamp);
-    }
-  };
-
-  const calculateStepResponse = async () => {
-    if (!stepTime) {
-      alert('Please set the step time (or use auto-detect)');
-      return;
-    }
-
-    const inputNode = mvNames.includes(selectedInput) ? `${selectedInput}:OP` : `${selectedInput}:PV`;
-    const inputData = historicalData.find(d => d.node_id === inputNode);
-    const cvDataList = selectedCVs.map(cv => 
-      historicalData.find(d => d.node_id === `${cv}:PV`)
-    );
-
-    if (!inputData || cvDataList.some(cv => !cv)) {
-      alert('Missing data for calculation');
-      return;
-    }
-
+  async function calculateStepResponse() {
+    if (!modelBinding || !timingValid || !inputSource || !Number.isFinite(stepMs) || outputs.length === 0) { setError('Valid binding, sample time and step time are required.'); return; }
+    if (!finite(baselineDuration) || baselineDuration <= 0 || baselineTruncated) { setError('The complete positive baseline window must be included.'); return; }
+    const samples = traces.map(trace => history[trace.nodeId]);
+    if (samples.some(points => !points || points.length < 2 || points.some(point => point.value === null))) { setError('Calculation requires recorded good-quality samples for every bound signal; missing data will not be interpolated by the UI.'); return; }
+    const requestedContext = context;
+    const requestedCalculation = calculationContext;
+    setLoading(true); setError(''); setResult(null);
+    const pairs = (points: HistorySample[]) => points.map(point => [new Date(point.time).toISOString(), point.value]);
     try {
-      const request = {
-        mv_node: inputNode,
-        cv_nodes: selectedCVs.map(cv => `${cv}:PV`),
-        mv_data: inputData.data.map(p => [p.timestamp, p.value]),
-        cv_data: cvDataList.map(cv => cv!.data.map(p => [p.timestamp, p.value])),
-        step_time: stepTime,
-        baseline_duration: baselineDuration,
-        response_duration: responseDuration,
-        sample_time: sampleTime,
-      };
+      const response = await apiFetch('/api/stepresponse/calculate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        mv_node: inputSource.nodeId, cv_nodes: outputs.map(variable => variable.nodes.PV), mv_data: pairs(samples[0]), cv_data: samples.slice(1).map(pairs),
+        step_time: new Date(stepMs).toISOString(), baseline_duration: baselineDuration, response_duration: responseDuration, sample_time: sampleTime,
+      }) }, true);
+      if (!response.ok) throw new Error(await response.text());
+      const calculated = decodeResponse(await response.json());
+      if (calculated.responses.length !== outputs.length || new Set(calculated.responses.map(row => row.cv_node)).size !== outputs.length
+        || calculated.responses.some(row => !outputs.some(variable => variable.nodes.PV === row.cv_node))) throw new Error('Calculation returned different bound CVs.');
+      if (requestedContext === activeContext.current && requestedCalculation === activeCalculation.current) setResult({ context: requestedCalculation, data: calculated });
+    } catch (cause) { if (requestedContext === activeContext.current) setError(cause instanceof Error ? cause.message : 'Calculation failed.'); }
+    finally { if (requestedContext === activeContext.current) setLoading(false); }
+  }
 
-      const response = await apiFetch('/api/stepresponse/calculate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(request),
-      }, true);
+  function exportToJSON() {
+    if (!result || !input || !inputSource || !modelBinding) return;
+    const data = { timestamp: new Date().toISOString(), input_tag: input.name, input_node: inputSource.nodeId, input_type: input.role,
+      sample_time: sampleTime, step_size: result.step_size, step_time: result.step_time,
+      responses: result.responses.map(response => ({ cv_tag: cvs.find(variable => variable.nodes.PV === response.cv_node)!.name, cv_node: response.cv_node, baseline: response.cv_baseline, coefficients: response.coefficients })) };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = `model_${input.role}_${input.name}.json`; anchor.click(); URL.revokeObjectURL(url);
+  }
 
-      if (response.ok) {
-        const result = await response.json();
-        setCalculatedResponse(result);
-      } else {
-        alert('Calculation failed: ' + await response.text());
-      }
-    } catch (error) {
-      console.error('Failed to calculate step response:', error);
-      alert('Calculation error');
-    }
-  };
-
-  const exportToJSON = () => {
-    if (!calculatedResponse) {
-      alert('No calculated response to export');
-      return;
-    }
-
-    // Format for model loader
-    const inputType = mvNames.includes(selectedInput) ? 'MV' : 'DV';
-    const modelData = {
-      timestamp: new Date().toISOString(),
-      input_tag: selectedInput,
-      input_type: inputType,
-      step_size: calculatedResponse.step_size,
-      step_time: calculatedResponse.step_time,
-      responses: calculatedResponse.responses.map((resp: any) => ({
-        cv_tag: resp.cv_node.split(':')[0],
-        baseline: resp.cv_baseline,
-        coefficients: resp.coefficients,
-      })),
-    };
-
-    const blob = new Blob([JSON.stringify(modelData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-    a.download = `model_${inputType}_${selectedInput}_${timestamp}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // Prepare chart data - properly merge all timestamps
-  const chartData = historicalData.length > 0 ? (() => {
-    // Collect all unique timestamps across all nodes
-    const grouped: Record<string, any> = {};
-    
-    historicalData.forEach(node => {
-      node.data.forEach(point => {
-        const key = point.timestamp;
-        if (!grouped[key]) {
-          grouped[key] = {
-            timestamp: new Date(point.timestamp).getTime(), // Unix milliseconds for x-axis
-            _sortKey: new Date(point.timestamp).getTime()
-          };
-        }
-        grouped[key][node.node_id] = point.value;
-      });
-    });
-    
-    // Sort by timestamp and remove sort key
-    return Object.values(grouped)
-      .sort((a, b) => a._sortKey - b._sortKey)
-      .map(({ _sortKey, ...rest }) => rest);
-  })() : [];
-
-  const toggleCV = (cv: string) => {
-    setSelectedCVs(prev => 
-      prev.includes(cv) ? prev.filter(c => c !== cv) : [...prev, cv]
-    );
-  };
-
-  // Validate baseline window whenever stepTime or baselineDuration changes
-  React.useEffect(() => {
-    if (stepTime && startTime) {
-      const stepMs = new Date(stepTime).getTime();
-      const startMs = new Date(startTime).getTime();
-      const baselineStartMs = stepMs - (baselineDuration * 1000);
-      setBaselineTruncated(baselineStartMs < startMs);
-    } else {
-      setBaselineTruncated(false);
-    }
-  }, [stepTime, startTime, baselineDuration]);
-
-  return (
-    <div className="p-6 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-slate-100">Model Generator</h1>
-        <div className="text-xs text-slate-500">
-          {mvNames.length} MVs · {cvNames.length} CVs · {dvNames.length} DVs
-        </div>
+  return <div className="space-y-4 p-6">
+    <h2 className="text-xl font-semibold">Step Response Tool</h2>
+    {!modelBinding && <p role="alert" className="text-amber-200">Model binding unavailable. Complete explicit node mappings and timing before identification.</p>}
+    {error && <p role="alert" className="break-words text-rose-300">{error}</p>}
+    <section className="space-y-3 rounded border border-slate-700 p-4">
+      <div className="grid gap-3 md:grid-cols-2">
+        <label className="text-xs">Start<input className={inputClass} type="datetime-local" value={startTime} onChange={event => setStartTime(event.target.value)} /></label>
+        <label className="text-xs">End<input className={inputClass} type="datetime-local" value={endTime} onChange={event => setEndTime(event.target.value)} /></label>
+        <label className="text-xs">Input (MV / DV)<select className={inputClass} value={selectedInput} disabled={!modelBinding} onChange={event => setSelectedInput(event.target.value)}><option value="">Select…</option>{inputs.map(variable => <option key={variable.name} value={variable.name}>{variable.role} · {variable.name} ({variable.units || 'units unknown'})</option>)}</select></label>
+        <fieldset><legend className="text-xs">Outputs (CVs)</legend><div className="flex flex-wrap gap-3">{cvs.map(variable => <label key={variable.name} className="text-xs"><input type="checkbox" checked={selectedCVs.includes(variable.name)} onChange={() => setSelectedCVs(previous => previous.includes(variable.name) ? previous.filter(name => name !== variable.name) : [...previous, variable.name])} /> {variable.name} ({variable.units || 'units unknown'})</label>)}</div></fieldset>
       </div>
-
-      {/* Step 1: Time Range & Variables */}
-      <div className="bg-slate-800/50 rounded-lg p-5 space-y-4">
-        <div className="grid grid-cols-4 gap-3">
-          {/* Time Range */}
-          <div className="col-span-2">
-            <label className="block text-xs font-medium text-slate-400 mb-1.5">Time Range</label>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="datetime-local"
-                value={startTime}
-                onChange={(e) => {
-                  const newStart = e.target.value;
-                  setStartTime(newStart);
-                  // Smart autofill: Set endTime to 1 hour later if not already set
-                  if (newStart && !endTime) {
-                    const start = new Date(newStart);
-                    const end = new Date(start.getTime() + 60 * 60 * 1000); // +1 hour
-                    setEndTime(end.toISOString().slice(0, 16));
-                  }
-                }}
-                className="w-full bg-slate-700/50 text-slate-100 rounded px-2.5 py-1.5 text-sm"
-              />
-              <input
-                type="datetime-local"
-                value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
-                className="w-full bg-slate-700/50 text-slate-100 rounded px-2.5 py-1.5 text-sm"
-              />
-            </div>
-          </div>
-
-          {/* Input Variable */}
-          <div>
-            <label className="block text-xs font-medium text-slate-400 mb-1.5">Input (MV/DV)</label>
-            <select
-              value={selectedInput}
-              onChange={(e) => setSelectedInput(e.target.value)}
-              className="w-full bg-slate-700/50 text-slate-100 rounded px-2.5 py-1.5 text-sm"
-            >
-              <option value="">Select...</option>
-              <optgroup label="MVs">
-                {mvNames.map(name => <option key={name} value={name}>{name}</option>)}
-              </optgroup>
-              <optgroup label="DVs">
-                {dvNames.map(name => <option key={name} value={name}>{name}</option>)}
-              </optgroup>
-            </select>
-          </div>
-
-          {/* Output Variables */}
-          <div>
-            <label className="block text-xs font-medium text-slate-400 mb-1.5">Outputs (CVs)</label>
-            <div className="bg-slate-700/50 rounded px-2.5 py-1.5 max-h-[34px] overflow-y-auto text-sm">
-              {cvNames.length > 0 ? (
-                <div className="flex flex-wrap gap-1">
-                  {cvNames.map(name => (
-                    <label key={name} className="flex items-center gap-1 text-slate-300 hover:text-slate-100 cursor-pointer text-xs">
-                      <input
-                        type="checkbox"
-                        checked={selectedCVs.includes(name)}
-                        onChange={() => toggleCV(name)}
-                        className="w-3 h-3"
-                      />
-                      <span>{name}</span>
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <span className="text-slate-500 text-xs">No CVs</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <button
-          onClick={loadHistoricalData}
-          disabled={loading}
-          className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 text-white font-medium py-2 rounded text-sm transition-colors"
-        >
-          {loading ? 'Loading...' : 'Load Data'}
-        </button>
-      </div>
-
-      {/* Chart Section */}
-      {historicalData.length > 0 && (
-        <div className="bg-slate-800/50 rounded-lg p-5 space-y-3">
-          <div className="text-xs text-slate-400 mb-2 flex items-center gap-2">
-            <span>💡 <strong>Click on the chart</strong> to set the Step Time</span>
-            {baselineTruncated && (
-              <span className="ml-auto text-amber-400 font-medium">⚠️ Warning: Baseline window is truncated by the start of data</span>
-            )}
-          </div>
-          <ResponsiveContainer width="100%" height={350}>
-            <LineChart 
-              data={chartData}
-              onClick={(e) => {
-                if (e && e.activeLabel) {
-                  const clickedTime = new Date(e.activeLabel).toISOString();
-                  setStepTime(clickedTime);
-                }
-              }}
-              style={{ cursor: 'crosshair' }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-              
-              {/* Visual Calculation Windows */}
-              {stepTime && (
-                <>
-                  {/* Baseline Area */}
-                  <ReferenceArea
-                    x1={new Date(stepTime).getTime() - (baselineDuration * 1000)}
-                    x2={new Date(stepTime).getTime()}
-                    fill="#64748b"
-                    fillOpacity={0.1}
-                    label={{ 
-                      value: 'Baseline', 
-                      position: 'insideTopLeft', 
-                      fill: '#64748b', 
-                      fontSize: 10,
-                      fontWeight: 600,
-                      offset: 5
-                    }}
-                  />
-                  {/* Response Area */}
-                  <ReferenceArea
-                    x1={new Date(stepTime).getTime()}
-                    x2={new Date(stepTime).getTime() + (responseDuration * 1000)}
-                    fill="#3b82f6"
-                    fillOpacity={0.1}
-                    label={{ 
-                      value: 'Response', 
-                      position: 'insideTopRight', 
-                      fill: '#3b82f6', 
-                      fontSize: 10,
-                      fontWeight: 600,
-                      offset: 5
-                    }}
-                  />
-                </>
-              )}
-              <XAxis 
-                dataKey="timestamp" 
-                type="number"
-                domain={['dataMin', 'dataMax']}
-                tickFormatter={(unixTime) => new Date(unixTime).toLocaleTimeString()}
-                stroke="#64748b"
-                tick={{ fontSize: 11 }}
-              />
-              <YAxis 
-                stroke="#64748b"
-                tick={{ fontSize: 11 }}
-              />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '6px', fontSize: '12px' }}
-                labelStyle={{ color: '#cbd5e1' }}
-                labelFormatter={(unixTime) => new Date(unixTime).toLocaleString()}
-                isAnimationActive={false}
-              />
-              <Legend wrapperStyle={{ fontSize: '11px' }} />
-              
-              {stepTime && (
-                <ReferenceLine 
-                  x={new Date(stepTime).getTime()} 
-                  stroke="#fbbf24" 
-                  strokeWidth={2}
-                  strokeDasharray="5 5"
-                  label={{ 
-                    value: 'Step', 
-                    position: 'top', 
-                    fill: '#fbbf24', 
-                    fontSize: 11,
-                    fontWeight: 600
-                  }}
-                />
-              )}
-              
-              {selectedInput && (
-                <Line
-                  type={mvNames.includes(selectedInput) ? "stepAfter" : "monotone"}
-                  dataKey={mvNames.includes(selectedInput) ? `${selectedInput}:OP` : `${selectedInput}:PV`}
-                  stroke="#ef4444"
-                  strokeWidth={2}
-                  dot={false}
-                  isAnimationActive={false}
-                  connectNulls={true}
-                  name={selectedInput}
-                />
-              )}
-              
-              {selectedCVs.map((cv, idx) => (
-                <Line
-                  key={cv}
-                  type="monotone"
-                  dataKey={`${cv}:PV`}
-                  stroke={['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6'][idx % 4]}
-                  strokeWidth={2}
-                  dot={false}
-                  isAnimationActive={false}
-                  connectNulls={true}
-                  name={cv}
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-
-          <div className="grid grid-cols-3 gap-3 pt-2">
-            <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1.5">Step Time</label>
-              <input
-                type="datetime-local"
-                step="1"
-                value={stepTime ? new Date(stepTime).toISOString().slice(0, 19) : ''}
-                onChange={(e) => {
-                  if (e.target.value) {
-                    setStepTime(new Date(e.target.value).toISOString());
-                  }
-                }}
-                className="w-full bg-slate-700/50 text-slate-100 rounded px-2.5 py-1.5 text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1.5">Baseline (s)</label>
-              <input
-                type="number"
-                value={baselineDuration}
-                onChange={(e) => setBaselineDuration(Number(e.target.value))}
-                className="w-full bg-slate-700/50 text-slate-100 rounded px-2.5 py-1.5 text-sm"
-                min="10"
-                step="10"
-              />
-            </div>
-            <div className="flex items-end">
-              <button
-                onClick={calculateStepResponse}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-1.5 rounded text-sm transition-colors"
-              >
-                Calculate
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2 text-xs text-slate-400 bg-slate-900/30 rounded p-2.5">
-            <div>Sample Time: <span className="text-slate-200 font-medium">{sampleTime}s</span></div>
-            <div>Response: <span className="text-slate-200 font-medium">{tssMin}min</span></div>
-            <div>Points: <span className="text-slate-200 font-medium">{Math.ceil(responseDuration / sampleTime)}</span></div>
-          </div>
-        </div>
-      )}
-
-      {/* Results Section */}
-      {calculatedResponse && (
-        <div className="bg-slate-800/50 rounded-lg p-5 space-y-4">
-          {/* Fit Quality Chart */}
-          <div className="bg-slate-900/30 rounded p-4">
-            <div className="text-xs font-medium text-slate-400 mb-3">Model Fit Quality</div>
-            <ResponsiveContainer width="100%" height={280}>
-              <LineChart>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis 
-                  dataKey="time" 
-                  type="number"
-                  domain={[0, responseDuration]}
-                  label={{ value: 'Time (s)', position: 'insideBottom', offset: -5, style: { fontSize: 10 } }}
-                  stroke="#64748b"
-                  tick={{ fontSize: 10 }}
-                />
-                <YAxis 
-                  label={{ value: 'Gain', angle: -90, position: 'insideLeft', style: { fontSize: 10 } }}
-                  stroke="#64748b"
-                  tick={{ fontSize: 10 }}
-                />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '6px', fontSize: '11px' }}
-                  labelFormatter={(val) => `${Number(val).toFixed(1)}s`}
-                />
-                <Legend wrapperStyle={{ fontSize: '10px' }} />
-                {calculatedResponse.responses.map((resp: any, idx: number) => {
-                  const cvName = resp.cv_node.split(':')[0];
-                  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
-                  const color = colors[idx % colors.length];
-                  
-                  // Raw data points
-                  const rawData = resp.raw_response.map(([time, gain]: [number, number]) => ({
-                    time,
-                    [`${cvName}_raw`]: gain
-                  }));
-                  
-                  // Fitted points
-                  const fittedData = resp.fitted_response.map(([time, gain]: [number, number]) => ({
-                    time,
-                    [`${cvName}_fitted`]: gain
-                  }));
-                  
-                  return (
-                    <React.Fragment key={cvName}>
-                      <Line 
-                        data={rawData}
-                        type="monotone" 
-                        dataKey={`${cvName}_raw`}
-                        stroke={color}
-                        strokeWidth={1}
-                        dot={false}
-                        name={`${cvName} raw`}
-                        strokeOpacity={0.3}
-                      />
-                      <Line 
-                        data={fittedData}
-                        type="monotone" 
-                        dataKey={`${cvName}_fitted`}
-                        stroke={color}
-                        strokeWidth={2}
-                        dot={{ r: 3 }}
-                        name={`${cvName} fit`}
-                      />
-                    </React.Fragment>
-                  );
-                })}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-
-          {/* Results Summary */}
-          <div className="grid grid-cols-4 gap-3 text-xs">
-            <div className="bg-slate-900/30 rounded p-2.5">
-              <div className="text-slate-500">MV Baseline</div>
-              <div className="text-lg font-semibold text-slate-100 mt-1">
-                {calculatedResponse.mv_baseline.toFixed(2)}
-              </div>
-            </div>
-            <div className="bg-slate-900/30 rounded p-2.5">
-              <div className="text-slate-500">Step Size</div>
-              <div className="text-lg font-semibold text-slate-100 mt-1">
-                {calculatedResponse.step_size.toFixed(2)}
-              </div>
-            </div>
-            <div className="bg-slate-900/30 rounded p-2.5 col-span-2">
-              <div className="text-slate-500">CV Responses</div>
-              <div className="text-lg font-semibold text-slate-100 mt-1">
-                {calculatedResponse.responses.length} × {calculatedResponse.responses[0]?.coefficients.length || 0} pts
-              </div>
-            </div>
-          </div>
-
-          {/* CV Details */}
-          <div className="space-y-1.5">
-            {calculatedResponse.responses.map((resp: any) => (
-              <div key={resp.cv_node} className="bg-slate-900/30 rounded px-3 py-2 flex items-center justify-between text-xs">
-                <span className="text-slate-300 font-medium">{resp.cv_node}</span>
-                <span className="text-slate-500">
-                  Baseline: <span className="text-slate-300">{resp.cv_baseline.toFixed(2)}</span>
-                </span>
-              </div>
-            ))}
-          </div>
-
-          <button
-            onClick={exportToJSON}
-            className="w-full bg-violet-600 hover:bg-violet-700 text-white font-medium py-2.5 rounded flex items-center justify-center gap-2 text-sm transition-colors"
-          >
-            <Download className="w-4 h-4" />
-            Export Model JSON
-          </button>
-        </div>
-      )}
-    </div>
-  );
+      {inputSource && <p className="break-all text-xs text-slate-400">Input node: {inputSource.nodeId}. {inputSource.feedback === 'sp-register' ? 'SP-register feedback only: not evidence that the PID applied the command.' : inputSource.feedback === 'applied-sp' ? 'Explicit applied-SP feedback.' : 'Explicit disturbance measurement.'} PID OP is a separate quantity and is not substituted for this model input.</p>}
+      <p className="text-xs text-slate-400">Sample time: {timingValid ? `${sampleTime} s` : 'unavailable'} · Response window: {finite(tssMin) ? `${tssMin} min` : 'unavailable'}</p>
+      <button onClick={() => void loadHistoricalData()} disabled={loading || !modelBinding || !timingValid} className="rounded bg-indigo-600 px-4 py-2 text-sm disabled:opacity-40">{loading ? 'Working…' : 'Load Data'}</button>
+    </section>
+    {Object.keys(history).length > 0 && <section className="space-y-4 rounded border border-slate-700 p-4">
+      <p className="text-xs text-slate-400">Click any independent chart to set the step time. Missing or non-good samples remain gaps.</p>
+      {traces.map(({ variable, nodeId }) => <div key={nodeId}><h3 className="text-sm">{variable.name} · {variable.units || 'units unknown'}</h3>{history[nodeId]?.length ? <div className="h-56"><ResponsiveContainer width="100%" height="100%"><LineChart data={history[nodeId]} syncId="identification-history" onClick={event => { const time = Number(event?.activeLabel); if (Number.isFinite(time)) { setStepTime(new Date(time).toISOString()); setResult(null); } }}>
+        <CartesianGrid stroke="#334155" strokeDasharray="3 3" /><XAxis dataKey="time" type="number" domain={['dataMin', 'dataMax']} tickFormatter={time => new Date(time).toLocaleTimeString()} /><YAxis domain={['auto', 'auto']} width={85} label={{ value: variable.units || 'unknown', angle: -90, position: 'insideLeft' }} /><Tooltip labelFormatter={time => new Date(Number(time)).toLocaleString()} />
+        {Number.isFinite(stepMs) && <><ReferenceArea x1={stepMs - baselineDuration * 1000} x2={stepMs} fill="#64748b" fillOpacity={0.15} /><ReferenceArea x1={stepMs} x2={stepMs + responseDuration * 1000} fill="#3b82f6" fillOpacity={0.1} /><ReferenceLine x={stepMs} stroke="#fbbf24" /></>}
+        <Line dataKey="value" name={variable.name} type={variable.role === 'MV' ? 'stepAfter' : 'linear'} stroke={variable.role === 'CV' ? '#818cf8' : '#fbbf24'} dot={false} connectNulls={false} isAnimationActive={false} />
+      </LineChart></ResponsiveContainer></div> : <p className="text-amber-200">No recorded data for {nodeId}.</p>}</div>)}
+      {baselineTruncated && <p role="alert" className="text-amber-200">The requested baseline begins before the loaded history window.</p>}
+      <div className="grid gap-3 md:grid-cols-3"><label className="text-xs">Step time<input className={inputClass} type="datetime-local" step="1" value={Number.isFinite(stepMs) ? new Date(stepMs - new Date(stepMs).getTimezoneOffset() * 60000).toISOString().slice(0, 19) : ''} onChange={event => { setStepTime(event.target.value); setResult(null); }} /></label><label className="text-xs">Baseline (seconds)<input className={inputClass} type="number" min="1" value={baselineDuration} onChange={event => { setBaselineDuration(Number(event.target.value)); setResult(null); }} /></label><button disabled={loading || !timingValid || !modelBinding} onClick={() => void calculateStepResponse()} className="rounded bg-emerald-700 px-4 py-2 text-sm disabled:opacity-40">Calculate</button></div>
+    </section>}
+    {result && <section className="space-y-4 rounded border border-slate-700 p-4">
+      <h3 className="font-semibold">Model fit · each CV retains an independent gain axis</h3>
+      <p className="text-sm">Input baseline: {result.mv_baseline} {input?.units || '(units unknown)'} · Step size: {result.step_size} {input?.units || '(units unknown)'}</p>
+      {result.responses.map(response => {
+        const variable = cvs.find(cv => cv.nodes.PV === response.cv_node)!;
+        const gainUnit = variable.units && input?.units ? `${variable.units} / ${input.units}` : 'gain units unknown';
+        return <div key={response.cv_node}><h4 className="text-sm">{variable.name} · {gainUnit} · Baseline {response.cv_baseline} {variable.units || '(units unknown)'}</h4><div className="h-64"><ResponsiveContainer width="100%" height="100%"><LineChart syncId="identification-fit">
+          <CartesianGrid stroke="#334155" strokeDasharray="3 3" /><XAxis dataKey="time" type="number" domain={[0, responseDuration]} label={{ value: 'Offset (seconds)', position: 'insideBottom', offset: -4 }} /><YAxis width={90} domain={['auto', 'auto']} /><Tooltip /><Legend />
+          <Line data={response.raw_response.map(([time, value]) => ({ time, value }))} dataKey="value" name="Recorded response" type="linear" stroke="#94a3b8" dot={false} connectNulls={false} isAnimationActive={false} />
+          <Line data={response.fitted_response.map(([time, value]) => ({ time, value }))} dataKey="value" name="Fitted response" type="linear" stroke="#818cf8" dot={false} connectNulls={false} isAnimationActive={false} />
+        </LineChart></ResponsiveContainer></div><p className="text-xs text-slate-400">{response.coefficients.length} coefficients · {response.cv_node}</p></div>;
+      })}
+      <button onClick={exportToJSON} className="flex items-center gap-2 rounded bg-violet-700 px-4 py-2"><Download className="h-4 w-4" />Export Model JSON</button>
+    </section>}
+  </div>;
 }

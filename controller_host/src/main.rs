@@ -1,3 +1,6 @@
+mod artifacts;
+mod runtime;
+
 use axum::{
     extract::{Path, Query, State, Request},
     routing::{get, post},
@@ -8,7 +11,7 @@ use axum::{
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, net::SocketAddr, path::{Path as StdPath, PathBuf}, sync::{Arc, Mutex}, fs::File};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::{Arc, Mutex}, fs::File};
 use tokio::{fs, process::Command};
 use std::process::Stdio;
 use tracing::{info, error, warn};
@@ -21,6 +24,10 @@ struct Args {
     /// Port to listen on
     #[arg(short, long, default_value_t = 8080)]
     port: u16,
+
+    /// IP address to bind; use 127.0.0.1 for isolated local validation.
+    #[arg(long, default_value = "0.0.0.0")]
+    bind_address: std::net::IpAddr,
 
     /// Directory to store model files
     #[arg(short, long, default_value = "./models")]
@@ -41,6 +48,9 @@ struct Args {
     /// Path to persisted OPC client defaults env file
     #[arg(long, default_value = "./config/opc_client.env")]
     opc_defaults_path: String,
+    /// Private local authority state; must be mode 0700 and have a short absolute path.
+    #[arg(long, default_value = "./runtime")]
+    runtime_dir: PathBuf,
 }
 
 #[derive(Clone)]
@@ -49,9 +59,10 @@ struct AppState {
     engine_bin: PathBuf,
     pki_dir: PathBuf,
     opc_defaults_path: PathBuf,
+    runtime_dir: PathBuf,
     api_key: String,
     opc_client_defaults: Arc<Mutex<OpcClientDefaults>>,
-    // Map of ModelID -> ProcessHandle (Simulator for now, in real life need Child handle management)
+    // Each monitor owns its child; stop requests never signal a recycled PID.
     processes: Arc<Mutex<HashMap<String, ProcessStatus>>>,
 }
 
@@ -72,15 +83,23 @@ enum ProcessState {
     Failed,
 }
 
+type StopRequest = tokio::sync::oneshot::Sender<std::io::Result<()>>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProcessStatus {
     id: String,
     active_model: Option<String>,
+    model_sha256: Option<String>,
+    control_version_id: Option<String>,
     state: ProcessState,
     last_error: Option<String>,
     started_at: Option<DateTime<Utc>>,
     stopped_at: Option<DateTime<Utc>>,
     last_log_path: Option<String>,
+    #[serde(skip)]
+    stop_sender: Option<tokio::sync::mpsc::Sender<StopRequest>>,
+    #[serde(skip)]
+    authority: Option<Arc<runtime::Launch>>,
 }
 
 #[tokio::main]
@@ -150,11 +169,13 @@ async fn main() {
         message_mode: "SignAndEncrypt".to_string(),
     });
 
+    let runtime_dir=runtime::private_root(&args.runtime_dir).expect("Invalid private native authority directory");
     let shared_state = AppState {
         model_dir,
         engine_bin,
         pki_dir: abs_pki,
         opc_defaults_path,
+        runtime_dir,
         api_key: args.api_key.clone(),
         opc_client_defaults: Arc::new(Mutex::new(initial_defaults)),
         processes: Arc::new(Mutex::new(HashMap::new())),
@@ -164,16 +185,18 @@ async fn main() {
         .route("/api/controllers", get(list_controllers))
         .route("/api/opc-client/defaults", get(get_opc_client_defaults).post(set_opc_client_defaults))
         .route("/api/controllers/:id/start", post(start_controller))
-        .route("/api/controllers/:id/stop", post(stop_controller))
+        .route("/api/controllers/:id/runtime", get(runtime::status).post(runtime::command))
+        .route("/api/controllers/:id/runtime/operations/:operation_id",get(runtime::operation))
         .route("/api/controllers/:id/logs/tail", get(get_log_tail))
         .route("/api/controllers/:id/config", get(get_model_config)) // <--- Added: Access to Single Source of Truth for Physics
         .route("/api/controllers/:id/models/:filename", get(get_model_file)) // <--- Added: Fetch specific model file
         .route("/api/deploy", post(deploy_model))
+        .route("/api/control-versions", post(install_control_version))
         .layer(middleware::from_fn_with_state(shared_state.clone(), auth_middleware))
         .route("/api/health", get(health_check)) // Health check bypasses auth
         .with_state(shared_state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    let addr = SocketAddr::new(args.bind_address, args.port);
     info!("🚀 Supervisor listening on {}", addr);
     
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -254,6 +277,8 @@ struct ControllerSummary {
     id: String,
     models: Vec<String>,
     active_model: Option<String>,
+    model_sha256: Option<String>,
+    control_version_id: Option<String>,
     state: ProcessState,
     last_error: Option<String>,
     started_at: Option<DateTime<Utc>>,
@@ -263,60 +288,39 @@ struct ControllerSummary {
 
 /// List all available model folders and their running state
 async fn list_controllers(State(state): State<AppState>) -> Json<Vec<ControllerSummary>> {
-    let mut summaries = Vec::new();
-    
-    // Read root model directory
-    if let Ok(mut entries) = fs::read_dir(&state.model_dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            // Look for directories (Controller "Slots")
-            if path.is_dir() {
-                if let Some(folder_name) = path.file_name().and_then(|s| s.to_str()) {
-                    let id = folder_name.to_string();
-                    
-                    // Scan inside for JSON models
-                    let mut models = Vec::new();
-                    if let Ok(mut sub_entries) = fs::read_dir(&path).await {
-                        while let Ok(Some(sub)) = sub_entries.next_entry().await {
-                             let sub_path = sub.path();
-                             if sub_path.extension().and_then(|s| s.to_str()) == Some("json") {
-                                if let Some(fname) = sub_path.file_name().and_then(|s| s.to_str()) {
-                                    models.push(fname.to_string());
-                                }
-                             }
-                        }
-                    }
-
-                    // Get process status
-                    let processes = state.processes.lock().unwrap();
-                    let (current_state, active_model, last_error, started_at, stopped_at, last_log_path) =
-                        if let Some(p) = processes.get(&id) {
-                            (p.state.clone(), p.active_model.clone(), p.last_error.clone(),
-                             p.started_at, p.stopped_at, p.last_log_path.clone())
-                        } else {
-                            (ProcessState::Stopped, None, None, None, None, None)
-                        };
-
-                    summaries.push(ControllerSummary {
-                        id,
-                        models,
-                        active_model,
-                        state: current_state,
-                        last_error,
-                        started_at,
-                        stopped_at,
-                        last_log_path,
-                    });
-                }
-            }
+    let available = match artifacts::list(&state.model_dir) {
+        Ok(available) => available,
+        Err(error) => {
+            error!("Cannot list controller models: {error:#}");
+            return Json(Vec::new());
         }
-    }
-    
-    Json(summaries)
+    };
+    let processes = state.processes.lock().unwrap();
+    Json(available.into_iter().map(|(id, models)| {
+        let status = processes.get(&id);
+        ControllerSummary {
+            id: id.clone(),
+            models,
+            active_model: status.and_then(|p| p.active_model.clone()),
+            model_sha256: status.and_then(|p| p.model_sha256.clone()),
+            control_version_id: status.and_then(|p| p.control_version_id.clone()),
+            state: status.map(|p| p.state.clone()).unwrap_or(ProcessState::Stopped),
+            last_error: status.and_then(|p| p.last_error.clone()),
+            started_at: status.and_then(|p| p.started_at),
+            stopped_at: status.and_then(|p| p.stopped_at),
+            last_log_path: status.and_then(|p| p.last_log_path.clone()),
+        }
+    }).collect())
 }
 
 #[derive(Deserialize)]
 struct StartRequest {
+    operation_id: String,
+    expires_at:DateTime<Utc>,
+    commissioning_profile: serde_json::Value,
+    approval:Option<serde_json::Value>,
+    #[serde(default)]
+    recover_monitor:bool,
     model_filename: String, // REQUIRED now
     opc_url: Option<String>,
     security_policy: Option<String>,
@@ -324,6 +328,13 @@ struct StartRequest {
     auth_mode: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    acquisition_sequence_node: Option<String>,
+    max_acquisition_age_secs: Option<f64>,
+    max_read_to_command_secs: Option<f64>,
+    command_confirmation_secs: Option<f64>,
+    command_confirmation_tolerance: Option<f64>,
+    monitor_window_samples: Option<usize>,
+    live_tuning: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -426,27 +437,47 @@ async fn set_opc_client_defaults(
     StatusCode::OK.into_response()
 }
 
+fn reserve_start<'a>(
+    processes: &'a Mutex<HashMap<String, ProcessStatus>>,
+    id: &str,
+) -> Result<std::sync::MutexGuard<'a, HashMap<String, ProcessStatus>>, &'static str> {
+    let guard = processes.lock().unwrap();
+    if guard.get(id).is_some_and(|status| matches!(status.state, ProcessState::Running(_))) {
+        return Err("Controller is already running");
+    }
+    Ok(guard)
+}
+
 async fn start_controller(
     State(state): State<AppState>,
     Path(id): Path<String>, // 'id' is the folder name
     Json(payload): Json<StartRequest>,
 ) ->  impl IntoResponse {
-    // Construct path: models/{id}/{filename}
-    let model_path = state.model_dir.join(&id).join(&payload.model_filename);
-    
-    if !model_path.exists() {
-        return (StatusCode::NOT_FOUND, format!("Model file not found inside {}", id)).into_response();
+    // Validate exact bytes and any immutable receipt before reserving/spawning.
+    if payload.expires_at<=Utc::now()||payload.expires_at>Utc::now()+chrono::Duration::seconds(300) {
+        return (StatusCode::CONFLICT,"Commissioned start intent expired or exceeds its authorization window").into_response();
     }
-
-    let processes = state.processes.lock().unwrap();
-    
-    // Check if THIS specific controller slot is running
-    if let Some(status) = processes.get(&id) {
-        if matches!(status.state, ProcessState::Running(_)) {
-             return (StatusCode::CONFLICT, "Controller is already running").into_response();
-        }
+    let loaded=if let Some(proof)=payload.approval.as_ref(){artifacts::load_approved(&state.model_dir,&id,&payload.model_filename,proof)}
+        else{artifacts::load(&state.model_dir,&id,&payload.model_filename)};
+    let model = match loaded {
+        Ok(model) => model,
+        Err(error) => return (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
+    };
+    let live_tuning = payload.live_tuning.unwrap_or(false);
+    if live_tuning {
+        return (StatusCode::BAD_REQUEST, "Commissioned controllers cannot enable manual live tuning").into_response();
     }
-    drop(processes);
+    if payload.acquisition_sequence_node.as_deref().is_none_or(str::is_empty)
+        ||payload.acquisition_sequence_node.as_deref()!=payload.commissioning_profile["acquisition_sequence_node"].as_str() {
+        return (StatusCode::BAD_REQUEST,"Acquisition sequence must match the exact commissioned producer contract").into_response();
+    }
+    let model_path = &model.path;
+    // There are no await points below. Holding this guard through spawn + insertion
+    // atomically reserves the slot, and every early return releases the reservation.
+    let mut processes = match reserve_start(&state.processes, &id) {
+        Ok(guard) => guard,
+        Err(message) => return (StatusCode::CONFLICT, message).into_response(),
+    };
 
     info!("Starting controller {} with model {}...", id, payload.model_filename);
     
@@ -487,6 +518,15 @@ async fn start_controller(
     let message_mode = defaults.message_mode.clone();
     let username = defaults.username.clone();
     let password = defaults.password.clone();
+    match runtime::register_start(&state.runtime_dir,&id,&payload.operation_id,&payload.commissioning_profile,&model.model_sha256,payload.approval.as_ref(),payload.recover_monitor) {
+        Ok(Some(receipt))=>return Json(receipt).into_response(),
+        Ok(None)=>{},
+        Err(error)=>return (StatusCode::CONFLICT,format!("{error:#}")).into_response(),
+    }
+    let authority=match runtime::Launch::prepare(&state.runtime_dir,&id,&payload.commissioning_profile,&model,&opc_url,payload.approval.as_ref(),payload.recover_monitor) {
+        Ok(launch)=>launch,
+        Err(error)=>return (StatusCode::CONFLICT,format!("{error:#}")).into_response(),
+    };
     let auth_mode_normalized = auth_mode.to_ascii_lowercase();
 
     // Persist resolved settings as the new default for subsequent starts
@@ -541,6 +581,10 @@ async fn start_controller(
     command
         .arg("--model")
         .arg(&model_path)
+        .arg("--expected-model-sha256")
+        .arg(&model.model_sha256)
+        .arg("--model-output-dir")
+        .arg(state.model_dir.join(&id))
         .arg("--opc")
         .arg(&opc_url)
         .arg("--pki")
@@ -553,6 +597,30 @@ async fn start_controller(
         .arg(&message_mode)
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err));
+    command.arg("--authority-socket").arg(&authority.socket)
+        .arg("--commissioning-profile").arg(&authority.profile_path);
+    if let Some(path)=&authority.startup_approval_path{command.arg("--startup-approval").arg(path);}
+    if payload.recover_monitor {command.arg("--recover-monitor");}
+
+    if live_tuning {
+        command.arg("--live-tuning");
+    }
+    if let Some(node) = &payload.acquisition_sequence_node {
+        command.arg("--acquisition-sequence-node").arg(node);
+    }
+    if let Some(samples) = payload.monitor_window_samples {
+        command.arg("--monitor-window-samples").arg(samples.to_string());
+    }
+    for (flag, value) in [
+        ("--max-acquisition-age-secs", payload.max_acquisition_age_secs),
+        ("--max-read-to-command-secs", payload.max_read_to_command_secs),
+        ("--command-confirmation-secs", payload.command_confirmation_secs),
+        ("--command-confirmation-tolerance", payload.command_confirmation_tolerance),
+    ] {
+        if let Some(value) = value {
+            command.arg(flag).arg(value.to_string());
+        }
+    }
 
     let child_res = if auth_mode_normalized == "username" {
         command
@@ -595,59 +663,103 @@ async fn start_controller(
             let pid = child.id().unwrap_or(0);
             info!("Started controller {} with PID {}", id, pid);
             let log_path_str = log_path.to_string_lossy().to_string();
-            {
-                let mut processes = state.processes.lock().unwrap();
-                processes.insert(id.clone(), ProcessStatus {
-                    id: id.clone(),
-                    active_model: Some(payload.model_filename.clone()),
-                    state: ProcessState::Running(pid),
-                    last_error: None,
-                    started_at: Some(Utc::now()),
-                    stopped_at: None,
-                    last_log_path: Some(log_path_str),
-                });
-            }
-
-            // Background task: watch for child exit and update state
-            let processes_watcher = state.processes.clone();
-            let watch_id = id.clone();
-            tokio::spawn(async move {
-                let exit_status = child.wait().await;
-                let mut processes = processes_watcher.lock().unwrap();
-                if let Some(status) = processes.get_mut(&watch_id) {
-                    // Only update if we're still the running instance (same PID)
-                    if matches!(status.state, ProcessState::Running(p) if p == pid) {
-                        status.stopped_at = Some(Utc::now());
-                        match exit_status {
-                            Ok(s) if s.success() => {
-                                info!("Controller {} exited cleanly.", watch_id);
-                                status.state = ProcessState::Stopped;
-                                status.last_error = None;
-                            }
-                            Ok(s) => {
-                                let msg = format!("Exited with code: {}", s.code().unwrap_or(-1));
-                                warn!("Controller {} failed: {}", watch_id, msg);
-                                status.state = ProcessState::Failed;
-                                status.last_error = Some(msg);
-                            }
-                            Err(e) => {
-                                let msg = format!("Wait error: {}", e);
-                                error!("Controller {} wait error: {}", watch_id, e);
-                                status.state = ProcessState::Failed;
-                                status.last_error = Some(msg);
-                            }
-                        }
-                    }
-                }
+            processes.insert(id.clone(), ProcessStatus {
+                id: id.clone(),
+                active_model: Some(payload.model_filename.clone()),
+                model_sha256: Some(model.model_sha256.clone()),
+                control_version_id: model.control_version_id.clone(),
+                state: ProcessState::Running(pid),
+                last_error: None,
+                started_at: Some(Utc::now()),
+                stopped_at: None,
+                last_log_path: Some(log_path_str),
+                stop_sender: None,
+                authority: Some(authority),
             });
+            drop(processes);
 
-            (StatusCode::OK, Json(json!({"pid": pid}))).into_response()
+            monitor_controller(child, state.processes.clone(), id.clone(), pid);
+
+            let receipt=json!({"ok":true,"confirmed":false,"kind":"start","operation_id":payload.operation_id,
+                "profile_hash":payload.commissioning_profile["profile_hash"],"pid":pid,
+                "model_sha256":model.model_sha256,"control_version_id":model.control_version_id,
+                "detail":"Process created; Monitor readiness/arming/application are separate"});
+            match runtime::finish_start(&state.runtime_dir,&payload.operation_id,receipt) {
+                Ok(receipt)=>Json(receipt).into_response(),
+                Err(error)=>(StatusCode::INTERNAL_SERVER_ERROR,format!("Process exists but receipt durability failed: {error:#}; do not restart")).into_response(),
+            }
         }
         Err(e) => {
             error!("Failed to spawn: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
+}
+
+fn monitor_controller(
+    mut child: tokio::process::Child,
+    processes_watcher: Arc<Mutex<HashMap<String, ProcessStatus>>>,
+    watch_id: String,
+    pid: u32,
+) -> tokio::task::JoinHandle<()> {
+    let (stop_sender, mut stop_requests) = tokio::sync::mpsc::channel::<StopRequest>(1);
+    {
+        let mut processes = processes_watcher.lock().unwrap();
+        if let Some(status) = processes.get_mut(&watch_id) {
+            if matches!(status.state, ProcessState::Running(p) if p == pid) {
+                status.stop_sender = Some(stop_sender);
+            }
+        }
+    }
+    tokio::spawn(async move {
+        let mut stopped_by_request = false;
+        let exit_status = loop {
+            tokio::select! {
+                biased;
+                // An already-observed crash remains a failure, even if a stop is queued.
+                result = child.wait() => break result,
+                Some(reply) = stop_requests.recv() => {
+                    let result = if stopped_by_request { Ok(()) } else { child.start_kill() };
+                    if result.is_ok() {
+                        stopped_by_request = true;
+                    }
+                    let _ = reply.send(result);
+                }
+            }
+        };
+        let mut processes = processes_watcher.lock().unwrap();
+        if let Some(status) = processes.get_mut(&watch_id) {
+            // Only the owning child may release this controller's process slot.
+            if matches!(status.state, ProcessState::Running(p) if p == pid) {
+                if exit_status.is_ok() {
+                    if let Some(authority)=&status.authority {authority.confirmed_exit();}
+                }
+                match exit_status {
+                    Ok(s) if s.success() || stopped_by_request => {
+                        info!("Controller {} stopped; operator request={}.", watch_id, stopped_by_request);
+                        status.state = ProcessState::Stopped;
+                        status.stopped_at = Some(Utc::now());
+                        status.last_error = None;
+                        status.stop_sender = None;
+                    }
+                    Ok(s) => {
+                        let msg = format!("Exited unexpectedly: {s}");
+                        warn!("Controller {} failed: {}", watch_id, msg);
+                        status.state = ProcessState::Failed;
+                        status.stopped_at = Some(Utc::now());
+                        status.last_error = Some(msg);
+                        status.stop_sender = None;
+                    }
+                    Err(e) => {
+                        let msg = format!("Wait error: {}", e);
+                        error!("Controller {} wait error: {}", watch_id, e);
+                        // No confirmed exit: keep the slot occupied.
+                        status.last_error = Some(msg);
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn load_opc_client_defaults(path: &PathBuf) -> Option<OpcClientDefaults> {
@@ -731,135 +843,52 @@ async fn stop_controller(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let mut processes = state.processes.lock().unwrap();
-
-    if let Some(status) = processes.get(&id) {
-        if let ProcessState::Running(pid) = status.state {
-            info!("Stopping controller {} (PID {})...", id, pid);
-            
-            // On Windows this kills the process
-            #[cfg(target_os = "windows")]
-            let _ = Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
-            
-            #[cfg(not(target_os = "windows"))]
-            let _ = Command::new("kill").arg(pid.to_string()).output();
-            
-            if let Some(status) = processes.get_mut(&id) {
-                status.state = ProcessState::Stopped;
-                status.stopped_at = Some(Utc::now());
+    let stop_sender = {
+        let processes = state.processes.lock().unwrap();
+        match processes.get(&id) {
+            Some(status) if matches!(status.state, ProcessState::Running(_)) => {
+                match status.stop_sender.clone() {
+                    Some(sender) => sender,
+                    None => return (StatusCode::SERVICE_UNAVAILABLE, "Process monitor unavailable; slot remains reserved").into_response(),
+                }
             }
-            return (StatusCode::OK, "Stopped").into_response();
+            _ => return (StatusCode::NOT_FOUND, "Not running").into_response(),
         }
+    };
+    let (reply, confirmation) = tokio::sync::oneshot::channel();
+    if stop_sender.send(reply).await.is_err() {
+        return (StatusCode::CONFLICT, "Process already exited; refresh its state").into_response();
     }
-
-    (StatusCode::NOT_FOUND, "Not running").into_response()
+    // A kill request is not an exit: only the owning monitor releases the slot.
+    match confirmation.await {
+        Ok(Ok(())) => (StatusCode::OK, "Stop requested").into_response(),
+        Ok(Err(error)) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+        Err(_) => (StatusCode::CONFLICT, "Process exited before stop confirmation; refresh its state").into_response(),
+    }
 }
 
 // Multipart upload handler for /deploy
 use axum::extract::Multipart;
-use std::io::Write;
-
-fn next_available_filename(folder_path: &StdPath, requested_filename: &str) -> String {
-    let requested_path = StdPath::new(requested_filename);
-    let stem = requested_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("model");
-    let ext = requested_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| format!(".{}", e))
-        .unwrap_or_default();
-
-    let clean_stem = if stem.is_empty() { "model" } else { stem };
-    let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let initial_candidate = format!("{}_{}{}", clean_stem, timestamp, ext);
-
-    if !folder_path.join(&initial_candidate).exists() {
-        return initial_candidate;
-    }
-
-    let mut idx: u32 = 1;
-    loop {
-        let candidate = format!("{}_{}_{}{}", clean_stem, timestamp, idx, ext);
-        if !folder_path.join(&candidate).exists() {
-            return candidate;
-        }
-        idx += 1;
-    }
-}
 
 async fn deploy_model(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap().to_string();
+        let name = field.name().unwrap_or_default().to_string();
         
         if name == "file" {
-            let filename = field
-                .file_name()
-                .and_then(|f| StdPath::new(f).file_name().and_then(|n| n.to_str()))
-                .unwrap_or("model.json")
-                .to_string();
+            let filename = field.file_name().unwrap_or("model.json").to_string();
             // Read all bytes into memory to parse metadata
             let data = match field.bytes().await {
                 Ok(b) => b,
                 Err(e) => return (StatusCode::BAD_REQUEST, format!("Failed to read upload: {}", e)).into_response(),
             };
             
-            // Extract Folder Name from JSON metadata
-            let folder_name = match serde_json::from_slice::<serde_json::Value>(&data) {
-                Ok(json) => {
-                    json.get("metadata")
-                        .and_then(|m| m.get("name"))
-                        .and_then(|n| n.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "Unknown".to_string())
-                },
-                Err(_) => "Unknown".to_string(), // Keep valid behavior for non-json files if any
+            return match artifacts::upload_manual(&state.model_dir, &filename, &data) {
+                Ok(filename) => (StatusCode::OK, format!("Deployed as {filename}")).into_response(),
+                Err(error) => (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
             };
-
-            // Sanitize
-            let safe_folder = folder_name.chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-                .collect::<String>();
-            
-            let final_folder = if safe_folder.is_empty() { "Unknown".to_string() } else { safe_folder };
-            
-            let folder_path = state.model_dir.join(&final_folder);
-            
-            // Ensure folder exists
-            if !folder_path.exists() {
-                if let Err(e) = std::fs::create_dir_all(&folder_path) {
-                    error!("Failed to create model folder: {}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create model directory").into_response();
-                }
-            }
-            
-            let safe_filename = filename
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
-                .collect::<String>();
-            let requested_filename = if safe_filename.is_empty() {
-                "model.json".to_string()
-            } else {
-                safe_filename
-            };
-
-            let final_filename = next_available_filename(&folder_path, &requested_filename);
-            let dest_path = folder_path.join(&final_filename);
-            info!("Deploying model to {:?}", dest_path);
-            
-            if let Ok(mut file) = std::fs::File::create(dest_path) {
-                if let Err(e) = file.write_all(&data) {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-                }
-            } else {
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create file").into_response();
-            }
-
-            return (StatusCode::OK, format!("Deployed as {}", final_filename)).into_response();
         }
     }
     
@@ -871,21 +900,9 @@ async fn get_model_config(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // Sanitize ID (prevent directory traversal)
-    let safe_id = std::path::Path::new(&id)
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-        
-    let model_path = state.model_dir.join(format!("{}.json", safe_id));
-    
-    if model_path.exists() {
-        match fs::read_to_string(model_path).await {
-            Ok(content) => (StatusCode::OK, content).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-        }
-    } else {
-        (StatusCode::NOT_FOUND, "Model config not found").into_response()
+    match artifacts::read_legacy_config(&state.model_dir, &id) {
+        Ok(content) => (StatusCode::OK, content).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
     }
 }
 // Get specific model file from controller's models directory
@@ -893,34 +910,110 @@ async fn get_model_file(
     State(state): State<AppState>,
     Path((controller_id, model_filename)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    // Sanitize inputs (prevent directory traversal)
-    let safe_controller_id = std::path::Path::new(&controller_id)
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let safe_filename = std::path::Path::new(&model_filename)
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    
-    // Build path: models/{controller_id}/{model_filename}
-    let model_path = state.model_dir.join(&*safe_controller_id).join(&*safe_filename);
-    
-    println!("🔍 Looking for model file: {}", model_path.display());
-    
-    if model_path.exists() {
-        match fs::read_to_string(&model_path).await {
-            Ok(content) => {
-                println!("✅ Serving model file: {}", model_path.display());
-                (StatusCode::OK, content).into_response()
-            },
-            Err(e) => {
-                println!("⚠️ Failed to read model file: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            }
+    match artifacts::load(&state.model_dir, &controller_id, &model_filename) {
+        Ok(model) => (StatusCode::OK, model.bytes).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
+    }
+}
+
+async fn install_control_version(
+    State(state): State<AppState>,
+    Json(payload): Json<artifacts::InstallRequest>,
+) -> impl IntoResponse {
+    // Installation is filesystem-only: no process launch, OPC writes, or mode changes.
+    match runtime::install(&state, &payload) {
+        Ok(receipt) => (StatusCode::OK, Json(receipt)).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn monitored_child(mut command: Command) -> (AppState, tokio::task::JoinHandle<()>) {
+        let child = command.kill_on_drop(true).spawn().unwrap();
+        let pid = child.id().unwrap();
+        let state = AppState {
+            model_dir: PathBuf::new(),
+            engine_bin: PathBuf::new(),
+            pki_dir: PathBuf::new(),
+            opc_defaults_path: PathBuf::new(),
+            runtime_dir: PathBuf::new(),
+            api_key: String::new(),
+            opc_client_defaults: Arc::new(Mutex::new(OpcClientDefaults {
+                opc_url: String::new(), auth_mode: String::new(), username: None,
+                password: None, security_policy: String::new(), message_mode: String::new(),
+            })),
+            processes: Arc::new(Mutex::new(HashMap::from([("test".into(), ProcessStatus {
+                id: "test".into(), active_model: None, model_sha256: None, control_version_id: None,
+                state: ProcessState::Running(pid), last_error: None, started_at: Some(Utc::now()),
+                stopped_at: None, last_log_path: None, stop_sender: None,
+                authority: None,
+            })]))),
+        };
+        let watcher = monitor_controller(child, state.processes.clone(), "test".into(), pid);
+        (state, watcher)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn requested_stop_is_stopped_not_failed() {
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let (state, watcher) = monitored_child(command);
+        let response = stop_controller(State(state.clone()), Path("test".into())).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::timeout(std::time::Duration::from_secs(5), watcher).await.unwrap().unwrap();
+        let processes = state.processes.lock().unwrap();
+        let status = &processes["test"];
+        assert_eq!(status.state, ProcessState::Stopped);
+        assert!(status.last_error.is_none());
+        assert!(status.stopped_at.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unexpected_child_exit_is_failed() {
+        for script in ["exit 7", "kill -TERM $$"] {
+            let mut command = Command::new("sh");
+            command.args(["-c", script]);
+            let (state, watcher) = monitored_child(command);
+            tokio::time::timeout(std::time::Duration::from_secs(5), watcher).await.unwrap().unwrap();
+            let processes = state.processes.lock().unwrap();
+            let status = &processes["test"];
+            assert_eq!(status.state, ProcessState::Failed);
+            assert!(status.last_error.is_some());
+            assert!(status.stopped_at.is_some());
         }
-    } else {
-        println!("⚠️ Model file not found: {}", model_path.display());
-        (StatusCode::NOT_FOUND, format!("Model file not found: {}", safe_filename)).into_response()
+    }
+
+    #[test]
+    fn start_slot_is_serialized_and_failed_start_releases_guard() {
+        let processes = Arc::new(Mutex::new(HashMap::new()));
+        {
+            let _failed_start = reserve_start(&processes, "Kiln_A").unwrap();
+            assert!(processes.try_lock().is_err());
+        }
+        let mut first = reserve_start(&processes, "Kiln_A").unwrap();
+        let other = processes.clone();
+        let second = std::thread::spawn(move || reserve_start(&other, "Kiln_A").is_err());
+        first.insert("Kiln_A".into(), ProcessStatus {
+            id: "Kiln_A".into(),
+            active_model: Some("manual.json".into()),
+            model_sha256: Some("a".repeat(64)),
+            control_version_id: None,
+            state: ProcessState::Running(1),
+            last_error: None,
+            started_at: None,
+            stopped_at: None,
+            last_log_path: None,
+            stop_sender: None,
+            authority: None,
+        });
+        drop(first);
+        assert!(second.join().unwrap());
+        assert!(reserve_start(&processes, "Other_Kiln").is_ok());
     }
 }

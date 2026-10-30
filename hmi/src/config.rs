@@ -12,6 +12,86 @@ pub struct AppSettings {
     pub paths: PathConfig,
     pub historian: HistorianConfig,
     pub hmi_auth: HmiAuthConfig,
+    #[serde(default)]
+    pub reports: ReportsConfig,
+    #[serde(default)]
+    pub web: WebConfig,
+    #[serde(default)]
+    pub research: ResearchConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ReportsConfig {
+    pub directory: String,
+}
+
+impl Default for ReportsConfig {
+    fn default() -> Self { Self { directory: "simulation_reports".into() } }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct WebConfig {
+    pub bind_address: String,
+    pub assets_directory: String,
+    pub local_test_mode: bool,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self { bind_address: "0.0.0.0:3000".into(), assets_directory: "frontend/dist".into(), local_test_mode: false }
+    }
+}
+
+/// Administrator-owned local research capability. Never populated from HTTP payloads.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResearchConfig {
+    pub enabled: bool,
+    pub directory: String,
+    pub python: String,
+    pub script: String,
+    pub binary: String,
+    pub bridge: String,
+    pub bridge_args: Vec<String>,
+    pub command_timeout_seconds: u64,
+    pub native_timeout_seconds: u64,
+    pub postgres_sources: Vec<ResearchPostgresSource>,
+}
+
+impl Default for ResearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            directory: String::new(),
+            python: String::new(),
+            script: String::new(),
+            binary: String::new(),
+            bridge: String::new(),
+            bridge_args: Vec::new(),
+            command_timeout_seconds: 120,
+            native_timeout_seconds: 3600,
+            postgres_sources: Vec::new(),
+        }
+    }
+}
+
+/// An administrator-maintained allowlist; connection secrets live only in the named environment variable.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchPostgresSource {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub dsn_env: String,
+    pub schema: String,
+    pub table: String,
+    pub timestamp_column: String,
+    /// Complete, ordered export columns, including timestamp_column exactly once.
+    pub columns: Vec<String>,
+    pub max_rows: usize,
+    pub statement_timeout_seconds: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -19,6 +99,8 @@ pub struct HmiAuthConfig {
     pub database_url: String,
     #[serde(default = "default_session_inactivity_minutes")]
     pub session_inactivity_minutes: u64,
+    #[serde(default)]
+    pub test_bootstrap_password: Option<String>,
 }
 
 fn default_session_inactivity_minutes() -> u64 {
@@ -75,7 +157,13 @@ pub struct IdentityConfig {
 pub struct RuntimeConfig {
     pub model_path: String,
     pub reconnect_delay_sec: u64,
+    #[serde(default = "default_connect_opcua")]
+    pub connect_opcua: bool,
+    #[serde(default)]
+    pub profiles_file: Option<String>,
 }
+
+fn default_connect_opcua() -> bool { true }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct PathConfig {

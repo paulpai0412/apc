@@ -135,14 +135,42 @@ fn test_stepresponse_wrong_mv_count() {
 }
 
 #[test]
-fn test_stepresponse_wrong_horizon_length() {
-    let mut model = test_helpers::create_simple_1x1_model();
-    // Coefficients have 10 steps, but model expects 15
-    model.tuning.prediction_horizon = 15;
-    
-    let result = load_stepresponse_model(&model);
-    assert!(result.is_err(), "Should reject horizon length mismatch");
-    assert!(result.unwrap_err().to_string().contains("length mismatch"));
+fn identified_response_lengths_are_independent_of_prediction_horizon() {
+    use authrity_apc_engine::dmc::DmcController;
+    use clarabel::solver::SolverStatus;
+    for (curve, horizon, expected) in [
+        (vec![0.2, 0.6, 1.0, 1.4, 1.8], 3, vec![50.6, 51.0, 51.4]),
+        (vec![0.2, 0.6], 5, vec![50.6; 5]),
+    ] {
+        let mut model = test_helpers::create_simple_1x1_model();
+        model.tuning.prediction_horizon = horizon;
+        model.tuning.control_horizon = 1;
+        model.physics.step_coefficients = vec![vec![curve.clone()]];
+        let (mv, dv) = load_stepresponse_model(&model).unwrap();
+        assert_eq!(mv[0][0], curve);
+        let mut controller = DmcController::new_from_coefficients(mv, dv, &model).unwrap();
+        controller.next_move(&[50.0], &[50.0], &[50.0], &[], &[50.0],
+            &[10.0], &[90.0], &[20.0], &[80.0], &[0.0], &[0.0], &[1.0]);
+        let observed = controller.next_move(&[50.2], &[50.2], &[51.0], &[], &[50.0],
+            &[10.0], &[90.0], &[20.0], &[80.0], &[0.0], &[0.0], &[1.0]);
+        assert!(matches!(observed.status, SolverStatus::Solved | SolverStatus::AlmostSolved));
+        assert_eq!(observed.predicted_pvs.len(), horizon);
+        for (actual, expected) in observed.predicted_pvs.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-4);
+        }
+    }
+}
+
+#[test]
+fn response_loader_rejects_empty_and_nonfinite_mv_and_dv_curves() {
+    for curve in [vec![], vec![f64::NAN], vec![f64::INFINITY]] {
+        let mut model = test_helpers::create_simple_1x1_model();
+        model.physics.step_coefficients[0][0] = curve.clone();
+        assert!(load_stepresponse_model(&model).is_err());
+        let mut model = test_helpers::create_model_with_dv();
+        model.physics.dv_coefficients[0][0] = curve;
+        assert!(load_stepresponse_model(&model).is_err());
+    }
 }
 
 #[test]

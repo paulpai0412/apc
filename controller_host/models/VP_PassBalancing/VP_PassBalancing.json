@@ -276,6 +276,7 @@
         "node_ids": {
           "pv": "FC1_Bias:PV",
           "sp": "FC1_Bias:SP",
+          "applied_sp": "FC1_Bias:AppliedSP",
           "op": "FC1_Bias:OP",
           "mode": "FC1_Bias:Mode",
           "mode_target": "FC1_Bias:ModeTarget",
@@ -307,6 +308,7 @@
         "node_ids": {
           "pv": "FC2_Bias:PV",
           "sp": "FC2_Bias:SP",
+          "applied_sp": "FC2_Bias:AppliedSP",
           "op": "FC2_Bias:OP",
           "mode": "FC2_Bias:Mode",
           "mode_target": "FC2_Bias:ModeTarget",
@@ -338,6 +340,7 @@
         "node_ids": {
           "pv": "FC3_Bias:PV",
           "sp": "FC3_Bias:SP",
+          "applied_sp": "FC3_Bias:AppliedSP",
           "op": "FC3_Bias:OP",
           "mode": "FC3_Bias:Mode",
           "mode_target": "FC3_Bias:ModeTarget",
@@ -369,6 +372,7 @@
         "node_ids": {
           "pv": "FC4_Bias:PV",
           "sp": "FC4_Bias:SP",
+          "applied_sp": "FC4_Bias:AppliedSP",
           "op": "FC4_Bias:OP",
           "mode": "FC4_Bias:Mode",
           "mode_target": "FC4_Bias:ModeTarget",
@@ -400,6 +404,7 @@
         "node_ids": {
           "pv": "FC5_Bias:PV",
           "sp": "FC5_Bias:SP",
+          "applied_sp": "FC5_Bias:AppliedSP",
           "op": "FC5_Bias:OP",
           "mode": "FC5_Bias:Mode",
           "mode_target": "FC5_Bias:ModeTarget",
@@ -431,6 +436,7 @@
         "node_ids": {
           "pv": "FC6_Bias:PV",
           "sp": "FC6_Bias:SP",
+          "applied_sp": "FC6_Bias:AppliedSP",
           "op": "FC6_Bias:OP",
           "mode": "FC6_Bias:Mode",
           "mode_target": "FC6_Bias:ModeTarget",

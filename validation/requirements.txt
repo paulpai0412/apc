@@ -1,0 +1,2 @@
+# Identification only; importer, synthetic generator and tuner use the standard library.
+numpy>=1.24,<3

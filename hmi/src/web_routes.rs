@@ -1,20 +1,18 @@
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State, Query, Multipart, Path as AxumPath},
+    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State, Query, Path as AxumPath},
     response::IntoResponse,
     Json,
     http::StatusCode,
 };
 use crate::state::AppState;
-use crate::opc_worker::{NodesFile, OpcCommand}; 
+use crate::opc_worker::{normalize_auth_mode, NodesFile, OpcCommand};
 use futures::{sink::SinkExt, stream::StreamExt}; 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use reqwest::Client;
-use std::path::Path;
 use std::collections::HashSet;
 use crate::infrastructure::InfrastructureConfig; // Added Import
-use crate::auth::{
-    permission_audit_label, required_runtime_write_permission, CsrfVerified, CurrentUser, Permission, Role,
-};
+use crate::auth::{CsrfVerified, CurrentUser, Permission, Role};
+use crate::model_binding::RuntimeBindings;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateUserRequest {
@@ -265,6 +263,7 @@ pub async fn save_infrastructure(
     if let Err(e) = user.require(Permission::InfraWrite) {
         return e.into_response();
     }
+    let _maintenance=match crate::runtime::safety::maintenance(&state,&user).await {Ok(guard)=>guard,Err(error)=>return error.into_response()};
 
     if let Err(detail) = validate_unique_opc_servers(&payload) {
         return (StatusCode::BAD_REQUEST, detail).into_response();
@@ -319,6 +318,7 @@ pub async fn save_controller_host_clients(
     if let Err(e) = user.require(Permission::InfraWrite) {
         return e.into_response();
     }
+    let _maintenance=match crate::runtime::safety::maintenance(&state,&user).await {Ok(guard)=>guard,Err(error)=>return error.into_response()};
 
     let mut config = match InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await {
         Ok(current) => current,
@@ -408,7 +408,7 @@ async fn sync_controller_host_opc_defaults(
             "opc_url": opc_url.clone(),
             "security_policy": host_client.security_policy,
             "message_mode": host_client.security_mode,
-            "auth_mode": normalize_auth_mode_payload(&host_client.auth_mode),
+            "auth_mode": normalize_auth_mode(&host_client.auth_mode),
             "username": username,
             "password": password,
         });
@@ -445,16 +445,20 @@ pub async fn reconnect_opc_worker(
     if let Err(e) = user.require(Permission::InfraWrite) {
         return e.into_response();
     }
+    let _maintenance=match crate::runtime::safety::maintenance(&state,&user).await {Ok(guard)=>guard,Err(error)=>return error.into_response()};
 
-    match state.cmd_tx.send(OpcCommand::Reconnect).await {
-        Ok(_) => {
-            state
-                .auth
-                .audit(Some(&user), "infra.opc_reconnect", Some("opc_worker"), "success", None)
-                .await;
-            StatusCode::OK.into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to request OPC reconnect: {}", e)).into_response(),
+    let baseline_connection=state.runtime.worker_connection().await;
+    let queued_at=chrono::Utc::now();
+    match state.cmd_tx.try_send(OpcCommand::Reconnect) {
+        Ok(())=>{
+            state.auth.audit(Some(&user),"infra.opc_reconnect",Some("opc_worker"),"queued",
+                Some("Reconnect requested; queue acceptance is not connection confirmation")).await;
+            (StatusCode::ACCEPTED,Json(serde_json::json!({"state":"queued","connected":null,"confirmed":false,
+                "queued_at":queued_at,"baseline_connection":baseline_connection,
+                "detail":"Reconnect queued. Observe subsequent worker connection events; this response does not confirm a connection."}))).into_response()
+        },
+        Err(error)=>(StatusCode::SERVICE_UNAVAILABLE,Json(serde_json::json!({"state":"not_queued","confirmed":false,
+            "detail":format!("Reconnect was not queued: {error}")}))).into_response(),
     }
 }
 
@@ -515,6 +519,7 @@ pub async fn save_opc_security_config_proxy(
     if let Err(e) = user.require(Permission::InfraWrite) {
         return e.into_response();
     }
+    let _maintenance=match crate::runtime::safety::maintenance(&state,&user).await {Ok(guard)=>guard,Err(error)=>return error.into_response()};
 
     let infra = match InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await {
         Ok(v) => v,
@@ -593,6 +598,7 @@ pub async fn upsert_opc_user_token_proxy(
     if let Err(e) = user.require(Permission::InfraWrite) {
         return e.into_response();
     }
+    let _maintenance=match crate::runtime::safety::maintenance(&state,&user).await {Ok(guard)=>guard,Err(error)=>return error.into_response()};
 
     let infra = match InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await {
         Ok(v) => v,
@@ -638,6 +644,7 @@ pub async fn upsert_opc_user_token_by_id_proxy(
     if let Err(e) = user.require(Permission::InfraWrite) {
         return e.into_response();
     }
+    let _maintenance=match crate::runtime::safety::maintenance(&state,&user).await {Ok(guard)=>guard,Err(error)=>return error.into_response()};
 
     let infra = match InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await {
         Ok(v) => v,
@@ -681,6 +688,7 @@ pub async fn delete_opc_user_token_proxy(
     if let Err(e) = user.require(Permission::InfraWrite) {
         return e.into_response();
     }
+    let _maintenance=match crate::runtime::safety::maintenance(&state,&user).await {Ok(guard)=>guard,Err(error)=>return error.into_response()};
 
     let infra = match InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await {
         Ok(v) => v,
@@ -723,6 +731,7 @@ pub async fn restart_opc_server_proxy(
     if let Err(e) = user.require(Permission::InfraWrite) {
         return e.into_response();
     }
+    let _maintenance=match crate::runtime::safety::maintenance(&state,&user).await {Ok(guard)=>guard,Err(error)=>return error.into_response()};
 
     let infra = match InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await {
         Ok(v) => v,
@@ -756,107 +765,6 @@ pub async fn restart_opc_server_proxy(
     }
 }
 
-// --- DEPLOYMENT HANDLER ---
-pub async fn deploy_bundle(
-    State(state): State<AppState>,
-    _: CsrfVerified,
-    user: CurrentUser,
-    mut multipart: Multipart,
-) -> impl IntoResponse {
-    if let Err(e) = user.require(Permission::ModelDeploy) {
-        return e.into_response();
-    }
-
-    println!("📦 HMI: Receiving Deployment Bundle...");
-    
-    let mut json_content: Option<Vec<u8>> = None;
-    let mut yaml_content: Option<Vec<u8>> = None;
-    let mut model_name = "Unknown".to_string();
-    
-    // Default URLs from config
-    let mut target_supervisor = state.settings.services.supervisor_url.clone();
-    let mut target_opc = state.settings.services.opc_hot_reload_url.clone();
-
-    while let Ok(Some(field)) = multipart.next_field().await {
-        let name = field.name().unwrap().to_string();
-        
-        if name == "model_json" {
-            if let Some(fname) = field.file_name() {
-                // If model name is unknown, define it from JSON filename
-                if model_name == "Unknown" {
-                    model_name = Path::new(fname).file_stem().unwrap().to_string_lossy().to_string();
-                }
-            }
-            json_content = Some(field.bytes().await.unwrap().to_vec());
-        } else if name == "nodes_yaml" {
-            // Also try to get model name from YAML if JSON wasn't provided first
-            if let Some(fname) = field.file_name() {
-                 if model_name == "Unknown" {
-                    model_name = Path::new(fname).file_stem().unwrap().to_string_lossy().to_string();
-                }
-            }
-            yaml_content = Some(field.bytes().await.unwrap().to_vec());
-        } else if name == "target_supervisor" {
-             let val = field.text().await.unwrap();
-             if !val.trim().is_empty() { target_supervisor = val; }
-        } else if name == "target_opc" {
-             let val = field.text().await.unwrap();
-             if !val.trim().is_empty() { target_opc = val; }
-        }
-    }
-
-    if json_content.is_none() && yaml_content.is_none() {
-        return (StatusCode::BAD_REQUEST, "Must provide at least model_json OR nodes_yaml").into_response();
-    }
-
-    let client = Client::new();
-    println!("🚀 Processing Deployment for '{}'...", model_name);
-
-    // 1. Push JSON to Supervisor (controller_host)
-    if let Some(json_bytes) = json_content {
-        println!("   -> Deploying JSON to Supervisor: {}", target_supervisor);
-        let json_part = reqwest::multipart::Part::bytes(json_bytes)
-            .file_name(format!("{}.json", model_name))
-            .mime_str("application/json").unwrap();
-            
-        let supervisor_form = reqwest::multipart::Form::new().part("file", json_part);
-        let deploy_url = format!("{}/api/deploy", target_supervisor);
-
-        match client.post(&deploy_url)
-            .header("x-api-key", &state.settings.services.supervisor_api_key)
-            .multipart(supervisor_form)
-            .send()
-            .await 
-        {
-            Ok(res) if res.status().is_success() => println!("      ✅ Supervisor Deployment Success"),
-            Ok(res) => return (StatusCode::BAD_GATEWAY, format!("Supervisor rejected: {}", res.status())).into_response(),
-            Err(e) => return (StatusCode::BAD_GATEWAY, format!("Supervisor unreachable: {}", e)).into_response(),
-        }
-    }
-
-    // 2. Push YAML to Connectivity (opcua_server)
-    if let Some(yaml_bytes) = yaml_content.clone() {
-        println!("   -> Hot-Swapping OPC UA Nodes on: {}", target_opc);
-        let hot_reload_url = format!("{}/api/nodes", target_opc);
-
-        match client.post(&hot_reload_url)
-            .body(yaml_bytes.clone()) 
-            .send()
-            .await
-        {
-            Ok(res) if res.status().is_success() => println!("      ✅ OPC UA Hot-Reload Success"),
-            Ok(res) => return (StatusCode::BAD_GATEWAY, format!("OPC Server rejected: {}", res.status())).into_response(),
-            Err(e) => return (StatusCode::BAD_GATEWAY, format!("OPC Server unreachable: {}", e)).into_response(),
-        }
-    }
-    
-    state
-        .auth
-        .audit(Some(&user), "model.deploy", Some(&model_name), "success", None)
-        .await;
-
-    (StatusCode::OK, format!("Partial/Full Deployment of '{}' Complete", model_name)).into_response()
-}
 
 // --- WEBSOCKET HANDLER ---
 pub async fn ws_handler(
@@ -867,54 +775,26 @@ pub async fn ws_handler(
     if let Err(e) = user.require(Permission::ReadView) {
         return e.into_response();
     }
-
-    ws.on_upgrade(|socket| handle_socket(socket, state, user))
+    if let Err(error)=crate::runtime::authorize_legacy_read(&state,&user){return error.into_response();}
+    let Some(identity)=state.auth.get_user_auth_state(user.id).await.ok().flatten()else{
+        return (StatusCode::UNAUTHORIZED,"Session identity unavailable").into_response();
+    };
+    let auth_version=identity.auth_version;
+    ws.on_upgrade(move|socket|handle_socket(socket,state,user,auth_version))
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState, user: CurrentUser) {
+async fn handle_socket(socket: WebSocket, state: AppState,user:CurrentUser,auth_version:i64) {
     let (mut sender, mut receiver) = socket.split();
     let mut rx = state.tx.subscribe();
 
     let cmd_tx = state.cmd_tx.clone();
-    let auth = state.auth.clone();
     
     // 1. Receive Commands (Browser -> Rust)
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             if let Message::Text(text) = msg {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if json["type"] == "WRITE" {
-                        if let Some(node_id) = json["nodeId"].as_str() {
-                            // Handle different value types
-                            if let Some(val) = json["value"].as_f64() {
-                                let required_permission = required_runtime_write_permission(node_id);
-                                if user.require(required_permission).is_err() {
-                                    let denied_detail = format!("requires {}", permission_audit_label(required_permission));
-                                    auth.audit(Some(&user), "runtime.write", Some(node_id), "denied", Some(&denied_detail)).await;
-                                    continue;
-                                }
-                                println!("📩 Web Command: Write number {} to {}", val, node_id);
-                                let _ = cmd_tx.send(OpcCommand::WriteNumber(node_id.to_string(), val)).await;
-                                auth.audit(Some(&user), "runtime.write", Some(node_id), "success", None).await;
-                            } else if let Some(val) = json["value"].as_str() {
-                                if user.require(Permission::RuntimeWriteBasic).is_err() {
-                                    auth.audit(Some(&user), "runtime.write", Some(node_id), "denied", Some("requires runtime:write_basic")).await;
-                                    continue;
-                                }
-                                println!("📩 Web Command: Write string '{}' to {}", val, node_id);
-                                let _ = cmd_tx.send(OpcCommand::WriteString(node_id.to_string(), val.to_string())).await;
-                                auth.audit(Some(&user), "runtime.write", Some(node_id), "success", None).await;
-                            } else if let Some(val) = json["value"].as_bool() {
-                                if user.require(Permission::RuntimeWriteBasic).is_err() {
-                                    auth.audit(Some(&user), "runtime.write", Some(node_id), "denied", Some("requires runtime:write_basic")).await;
-                                    continue;
-                                }
-                                println!("📩 Web Command: Write bool {} to {}", val, node_id);
-                                let _ = cmd_tx.send(OpcCommand::WriteBool(node_id.to_string(), val)).await;
-                                auth.audit(Some(&user), "runtime.write", Some(node_id), "success", None).await;
-                            }
-                        }
-                    } else if json["type"] == "REFRESH" {
+                    if json["type"] == "REFRESH" {
                         println!("🔄 Web Command: Client requested data refresh");
                         let _ = cmd_tx.send(OpcCommand::ReadAll).await;
                     }
@@ -938,7 +818,74 @@ async fn handle_socket(socket: WebSocket, state: AppState, user: CurrentUser) {
         }
     });
 
-    tokio::select! { _ = &mut recv_task => {}, _ = &mut send_task => {} }
+    tokio::select! {
+        _=&mut recv_task=>{}, _=&mut send_task=>{},
+        _=async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let valid=state.auth.get_user_auth_state(user.id).await.ok().flatten()
+                    .is_some_and(|current|!current.disabled&&!current.force_password_change&&current.role==user.role&&current.auth_version==auth_version);
+                if !valid||crate::runtime::authorize_legacy_read(&state,&user).is_err(){break;}
+            }
+        }=>{}
+    }
+    recv_task.abort();
+    send_task.abort();
+}
+
+struct ConfiguredModelSource {
+    nodes_url: reqwest::Url,
+    endpoint: String,
+}
+
+async fn configured_model_source(state: &AppState) -> Result<ConfiguredModelSource, String> {
+    let infra = InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await
+        .map_err(|error| format!("Model source configuration is unavailable: {error}"))?;
+    let opc = infra.opc_servers.first()
+        .ok_or("No OPC server configured in infrastructure settings")?;
+    let nodes_url = reqwest::Url::parse(&format!("{}/api/nodes", opc.url.trim_end_matches('/')))
+        .map_err(|_| "Configured OPC management URL is invalid")?;
+    // Match the worker's existing primary-source and settings fallback resolution.
+    let endpoint = opc.opc_endpoint.as_ref().filter(|endpoint| !endpoint.is_empty())
+        .unwrap_or(&state.settings.opcua.endpoint_url).clone();
+    if endpoint.is_empty() {
+        return Err("Configured OPC endpoint is missing; runtime writes are disabled".into());
+    }
+    Ok(ConfiguredModelSource { nodes_url, endpoint })
+}
+
+fn model_source_client() -> Result<Client, String> {
+    Client::builder().timeout(std::time::Duration::from_millis(500)).build()
+        .map_err(|error| format!("Cannot initialize OPC model lookup: {error}"))
+}
+
+async fn fetch_model_names(client: &Client, source: &ConfiguredModelSource) -> Result<Vec<String>, String> {
+    client.get(source.nodes_url.clone()).send().await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| format!("Configured OPC model list is unavailable: {error}"))?
+        .json::<Vec<String>>().await
+        .map_err(|error| format!("Configured OPC model list is invalid: {error}"))
+}
+
+fn model_nodes_url(source: &ConfiguredModelSource, filename: &str) -> Result<reqwest::Url, String> {
+    if filename.trim().is_empty() || filename == "." || filename == ".."
+        || filename.contains(['/', '\\']) || filename.chars().any(char::is_control) {
+        return Err("Invalid model filename; select a model from the configured OPC source".into());
+    }
+    let mut url = source.nodes_url.clone();
+    url.path_segments_mut().map_err(|_| "Configured OPC management URL cannot contain model paths")?
+        .push(filename);
+    Ok(url)
+}
+
+async fn fetch_model_nodes(client: &Client, source: &ConfiguredModelSource, filename: &str) -> Result<NodesFile, String> {
+    let url = model_nodes_url(source, filename)?;
+    let content = client.get(url).send().await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| format!("Model '{filename}' is unavailable from the configured OPC source: {error}"))?
+        .text().await.map_err(|error| format!("Cannot read model '{filename}': {error}"))?;
+    serde_yaml::from_str::<NodesFile>(&content)
+        .map_err(|error| format!("Invalid node map or model binding in '{filename}': {error}"))
 }
 
 // --- LIST ALL YAML MODELS ---
@@ -950,28 +897,14 @@ pub async fn list_models(
         return e.into_response();
     }
 
-    // Load registry to find primary OPC server and list models from remote source only.
-    if let Ok(infra) = InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await {
-        if let Some(opc) = infra.opc_servers.first() {
-            let client = Client::builder()
-                .timeout(std::time::Duration::from_millis(500))
-                .build()
-                .unwrap_or_default();
-            println!("🔍 Fetching models from OPC Server: {}", opc.url);
-            
-            match client.get(&format!("{}/api/nodes", opc.url)).send().await {
-                Ok(resp) => {
-                    if let Ok(models) = resp.json::<Vec<String>>().await {
-                        return Json(models).into_response();
-                    }
-                    return (StatusCode::BAD_GATEWAY, "Failed to parse model list from OPC server").into_response();
-                },
-                Err(e) => return (StatusCode::BAD_GATEWAY, format!("Failed to fetch models from OPC server: {}", e)).into_response(),
-            }
-        }
+    let result = async {
+        let source = configured_model_source(&state).await?;
+        fetch_model_names(&model_source_client()?, &source).await
+    }.await;
+    match result {
+        Ok(models) => Json(models).into_response(),
+        Err(error) => (StatusCode::BAD_GATEWAY, error).into_response(),
     }
-
-    (StatusCode::NOT_FOUND, "No OPC server configured in infrastructure settings").into_response()
 }
 
 // --- DYNAMIC CONFIG LOADER ---
@@ -994,31 +927,16 @@ pub async fn get_model_config(
         _ => return (StatusCode::BAD_REQUEST, "Missing required query parameter: file").into_response(),
     };
     
-    // 1. Try fetching from Remote OPC Server
-    if let Ok(infra) = InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await {
-        if let Some(opc) = infra.opc_servers.first() {
-            let client = Client::builder()
-                .timeout(std::time::Duration::from_millis(500))
-                .build()
-                .unwrap_or_default();
-            let url = format!("{}/api/nodes/{}", opc.url, filename);
-             println!("🔍 Fetching node map from OPC Server: {}", url);
-            
-            match client.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(content) = resp.text().await {
-                        if let Ok(nodes_file) = serde_yaml::from_str::<NodesFile>(&content) {
-                            return Json(nodes_file).into_response();
-                        }
-                    }
-                },
-                Err(e) => return (StatusCode::BAD_GATEWAY, format!("Failed to fetch node map from OPC server: {}", e)).into_response(),
-                Ok(r) => return (StatusCode::BAD_GATEWAY, format!("Remote node map fetch failed: {}", r.status())).into_response(),
-            }
-        }
+    let result = async {
+        let source = configured_model_source(&state).await?;
+        let nodes = fetch_model_nodes(&model_source_client()?, &source, &filename).await?;
+        RuntimeBindings::from_models(std::slice::from_ref(&nodes))?;
+        Ok::<_, String>(nodes)
+    }.await;
+    match result {
+        Ok(nodes) => Json(nodes).into_response(),
+        Err(error) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error":error}))).into_response(),
     }
-
-    (StatusCode::NOT_FOUND, "No OPC server configured in infrastructure settings").into_response()
 }
 
 // --- FETCH PHYSICS FROM SUPERVISOR ---
@@ -1220,158 +1138,7 @@ pub async fn list_controllers_proxy(
     }
 }
 
-pub async fn start_controller_proxy(
-    AxumPath(id): AxumPath<String>,
-    State(state): State<AppState>,
-    _: CsrfVerified,
-    user: CurrentUser,
-    Json(mut payload): Json<serde_json::Value>, // Read the incoming JSON body
-) -> impl IntoResponse {
-    if let Err(e) = user.require(Permission::ControllerLifecycle) {
-        return e.into_response();
-    }
 
-    let mut target_sup = state.settings.services.supervisor_url.clone();
-    let api_key = state.settings.services.supervisor_api_key.clone();
-    let mut target_opc_tcp = state.settings.opcua.endpoint_url.clone();
-    let mut auth_mode = state.settings.auth.mode.as_str().to_string();
-    let mut auth_username = state.settings.auth.username.clone();
-    let mut auth_password = state.settings.auth.password.clone();
-    let mut security_policy = state.settings.opcua.security_policy.clone();
-    let mut message_mode = state.settings.opcua.message_mode.clone();
-
-    let target_sup_from_payload = payload
-        .get("target_supervisor")
-        .and_then(|v| v.as_str())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-
-    if let Ok(infra) = InfrastructureConfig::load_from_db(&state.settings.hmi_auth.database_url).await {
-        if let Some(from_payload) = target_sup_from_payload {
-            target_sup = from_payload;
-        } else if let Some(supervisor) = infra.supervisors.first() {
-            target_sup = supervisor.url.clone();
-        }
-
-        if let Some(opc) = infra.opc_servers.first() {
-            if let Some(endpoint) = &opc.opc_endpoint {
-                if !endpoint.trim().is_empty() {
-                    target_opc_tcp = endpoint.clone();
-                }
-            }
-        }
-
-        if let Some(selected_supervisor) = infra.supervisors.iter().find(|sup| sup.url == target_sup) {
-            if let Some(host_client) = infra
-                .controller_host_clients
-                .iter()
-                .find(|client| client.supervisor_id == selected_supervisor.id)
-            {
-                auth_mode = host_client.auth_mode.clone();
-                let (resolved_username, resolved_password) =
-                    infra.resolve_controller_host_username_password(&selected_supervisor.id);
-                auth_username = resolved_username;
-                auth_password = resolved_password;
-                security_policy = host_client.security_policy.clone();
-                message_mode = host_client.security_mode.clone();
-            }
-        }
-    }
-
-    // Inject OPC URL into the payload if not present
-    if let Some(obj) = payload.as_object_mut() {
-        if !obj.contains_key("opc_url") {
-            obj.insert("opc_url".to_string(), serde_json::json!(target_opc_tcp));
-        }
-        if !obj.contains_key("security_policy") {
-            obj.insert("security_policy".to_string(), serde_json::json!(security_policy));
-        }
-        if !obj.contains_key("message_mode") {
-            obj.insert("message_mode".to_string(), serde_json::json!(message_mode));
-        }
-        if !obj.contains_key("auth_mode") {
-            obj.insert("auth_mode".to_string(), serde_json::json!(normalize_auth_mode_payload(&auth_mode)));
-        }
-        if normalize_auth_mode_payload(&auth_mode) == "username" {
-            if !obj.contains_key("username") {
-                if let Some(username) = auth_username {
-                    if !username.trim().is_empty() {
-                        obj.insert("username".to_string(), serde_json::json!(username));
-                    }
-                }
-            }
-            if !obj.contains_key("password") {
-                if let Some(password) = auth_password {
-                    if !password.trim().is_empty() {
-                        obj.insert("password".to_string(), serde_json::json!(password));
-                    }
-                }
-            }
-        }
-    }
-
-    let client = Client::new();
-    let url = format!("{}/api/controllers/{}/start", target_sup, id);
-
-    match client.post(&url).header("x-api-key", api_key).json(&payload).send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            if status.is_success() {
-                state
-                    .auth
-                    .audit(Some(&user), "controller.start", Some(&id), "success", None)
-                    .await;
-            }
-            match resp.text().await {
-                Ok(body) => (status, body).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-            }
-        }
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("Supervisor unreachable: {}", e)).into_response(),
-    }
-}
-
-fn normalize_auth_mode_payload(mode: &str) -> &'static str {
-    match mode.trim().to_ascii_lowercase().as_str() {
-        "anonymous" | "anon" => "anonymous",
-        "x509" | "cert" | "certificate" => "x509",
-        _ => "username",
-    }
-}
-
-pub async fn stop_controller_proxy(
-    AxumPath(id): AxumPath<String>,
-    State(state): State<AppState>,
-    _: CsrfVerified,
-    user: CurrentUser,
-) -> impl IntoResponse {
-    if let Err(e) = user.require(Permission::ControllerLifecycle) {
-        return e.into_response();
-    }
-
-    let target_sup = state.settings.services.supervisor_url.clone();
-    let api_key = state.settings.services.supervisor_api_key.clone();
-
-    let client = Client::new();
-    let url = format!("{}/api/controllers/{}/stop", target_sup, id);
-
-    match client.post(&url).header("x-api-key", api_key).send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            if status.is_success() {
-                state
-                    .auth
-                    .audit(Some(&user), "controller.stop", Some(&id), "success", None)
-                    .await;
-            }
-            match resp.text().await {
-                Ok(body) => (status, body).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-            }
-        }
-        Err(e) => (StatusCode::BAD_GATEWAY, format!("Supervisor unreachable: {}", e)).into_response(),
-    }
-}
 
 #[derive(Deserialize)]
 pub struct LogTailQuery {
@@ -1409,20 +1176,26 @@ pub async fn get_controller_logs_proxy(
 
 // --- QUERY HISTORICAL DATA FROM QUESTDB ---
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrendsQuery {
-    tags: String,        // Comma-separated: "TI1:PV,FC1:OP"
+    nodes: String,       // JSON array of exact physical node IDs
+    settings: Option<String>, // Optional JSON array of exact setting node IDs
     start: String,       // ISO timestamp or relative: "2024-01-10T14:00:00Z" or "-1h"
     end: Option<String>, // ISO timestamp or "now"
-    bucket_ms: Option<u64>,
     max_points: Option<usize>,
 }
 
-#[derive(Serialize)]
-pub struct TrendsDataPoint {
-    timestamp: String,
-    tag: String,
-    field: String,
-    value: f64,
+
+fn parse_trend_node_ids(encoded: &str, field: &str, allow_empty: bool) -> Result<Vec<String>, String> {
+    let nodes: Vec<String> = serde_json::from_str(encoded)
+        .map_err(|_| format!("{field} must be a JSON array of node ID strings"))?;
+    if !allow_empty && nodes.is_empty() {
+        return Err(format!("{field} must contain at least one node ID"));
+    }
+    if nodes.iter().any(|node| node.trim().is_empty() || node.chars().any(char::is_control)) {
+        return Err(format!("{field} contains an empty or control-character node ID"));
+    }
+    Ok(nodes)
 }
 
 pub async fn get_trends_data(
@@ -1433,8 +1206,8 @@ pub async fn get_trends_data(
     if let Err(e) = user.require(Permission::ReadView) {
         return e.into_response();
     }
+    if let Err(error)=crate::runtime::authorize_legacy_read(&state,&user){return error.into_response();}
 
-    use crate::historian::{query_historical_data, HistoricalQueryOptions};
 
     // Parse end time - use provided end or default to now
     let end_time = if let Some(end_str) = &params.end {
@@ -1480,56 +1253,21 @@ pub async fn get_trends_data(
         }
     };
 
-    // Parse node IDs (convert tag:field format)
-    let node_ids: Vec<String> = params.tags
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    if node_ids.is_empty() {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            "No valid tags provided"
-        ).into_response();
-    }
-
-    let range_ms = (end_time - start_time).num_milliseconds().max(1) as u64;
-    let derived_bucket_ms = params.max_points
-        .filter(|points| *points > 0)
-        .map(|points| {
-            let points_u64 = points as u64;
-            let raw = (range_ms + points_u64 - 1) / points_u64;
-            raw.max(1000)
-        });
-
-    let options = HistoricalQueryOptions {
-        bucket_ms: params.bucket_ms.or(derived_bucket_ms),
+    let node_ids = match parse_trend_node_ids(&params.nodes, "nodes", false) {
+        Ok(nodes) => nodes,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+    };
+    let setting_nodes = match parse_trend_node_ids(params.settings.as_deref().unwrap_or("[]"), "settings", true) {
+        Ok(nodes) => nodes,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
     };
 
-    // Query historian using shared function
-    match query_historical_data(&state.historian_config, start_time, end_time, node_ids, options).await {
-        Ok(node_histories) => {
-            // Flatten grouped data into TrendsDataPoint format
-            let mut data_points = Vec::new();
-            
-            for node_history in node_histories {
-                for point in node_history.data {
-                    data_points.push(TrendsDataPoint {
-                        timestamp: point.timestamp,
-                        tag: node_history.tag.clone(),
-                        field: node_history.field.clone(),
-                        value: point.value,
-                    });
-                }
-            }
-            
-            Json(data_points).into_response()
-        }
-        Err(e) => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to query historical data: {}", e)
-        ).into_response()
+    match crate::process_trends::query(&state.historian_config, start_time, end_time, &node_ids, &setting_nodes, params.max_points).await {
+        Ok(history) => Json(history).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            format!("無法讀取歷史趨勢：{error}"),
+        ).into_response(),
     }
 }
 
@@ -1566,10 +1304,11 @@ fn parse_relative_time(time_str: &str, reference: chrono::DateTime<chrono::Utc>)
 
 /// Request parameters for historical data query
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HistoricalDataQuery {
     pub start: String,  // ISO 8601 datetime
     pub end: String,    // ISO 8601 datetime
-    pub nodes: String,  // Comma-separated node IDs (e.g., "MV1:OP,CV1:PV,CV2:PV")
+    pub nodes: String,  // JSON array of exact physical node IDs
 }
 
 /// Get historical time-series data for step response analysis
@@ -1581,6 +1320,7 @@ pub async fn get_step_response_data(
     if let Err(e) = user.require(Permission::ReadView) {
         return e.into_response();
     }
+    if let Err(error)=crate::runtime::authorize_legacy_read(&state,&user){return error.into_response();}
 
     use chrono::DateTime;
     use crate::historian::{query_historical_data, HistoricalQueryOptions};
@@ -1606,19 +1346,10 @@ pub async fn get_step_response_data(
         }
     };
 
-    // Parse node IDs
-    let node_ids: Vec<String> = params.nodes
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    if node_ids.is_empty() {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            "No node IDs specified"
-        ).into_response();
-    }
+    let node_ids = match parse_trend_node_ids(&params.nodes, "nodes", false) {
+        Ok(nodes) => nodes,
+        Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+    };
 
     // Query historian
     match query_historical_data(
@@ -1644,6 +1375,7 @@ pub async fn get_available_tags_api(
     if let Err(e) = user.require(Permission::ReadView) {
         return e.into_response();
     }
+    if let Err(error)=crate::runtime::authorize_legacy_read(&state,&user){return error.into_response();}
 
     use crate::historian::get_available_tags;
 
@@ -1862,3 +1594,51 @@ fn resample_step_response(raw_points: &[(f64, f64)], num_points: usize, sample_t
     coefficients
 }
 
+
+#[cfg(test)]
+mod model_source_tests {
+    use super::*;
+
+    #[test]
+    fn model_selection_cannot_change_the_configured_source_or_escape_its_route() {
+        let source = ConfiguredModelSource {
+            nodes_url: reqwest::Url::parse("http://configured.example:4841/api/nodes").unwrap(),
+            endpoint: "opc.tcp://configured.example:4840".into(),
+        };
+        assert_eq!(model_nodes_url(&source, "cement-q1.yaml").unwrap().as_str(),
+            "http://configured.example:4841/api/nodes/cement-q1.yaml");
+        for filename in ["", "..", "../other", "http://attacker.example/map", "other\\map"] {
+            assert!(model_nodes_url(&source, filename).is_err());
+        }
+        let encoded = model_nodes_url(&source, "%2e%2e?url=attacker").unwrap();
+        assert_eq!(encoded.host_str(), Some("configured.example"));
+        assert_eq!(encoded.path(), "/api/nodes/%252e%252e%3Furl=attacker");
+        assert!(encoded.query().is_none());
+    }
+}
+
+#[cfg(test)]
+mod trend_query_tests {
+    use super::*;
+
+    #[test]
+    fn exact_node_arrays_preserve_delimiters_case_and_whitespace_without_aliases() {
+        assert_eq!(parse_trend_node_ids(r#"["Sensor","zone:loop:pv","Plant,Feed"," MixedCase "]"#, "nodes", false).unwrap(),
+            ["Sensor", "zone:loop:pv", "Plant,Feed", " MixedCase "]);
+        assert_eq!(parse_trend_node_ids(r#"["custom.request","custom.mode"]"#, "settings", true).unwrap(),
+            ["custom.request", "custom.mode"]);
+        assert!(parse_trend_node_ids("[]", "settings", true).unwrap().is_empty());
+        assert!(parse_trend_node_ids("[]", "nodes", false).is_err());
+    }
+
+    #[test]
+    fn malformed_or_legacy_trend_selections_are_rejected() {
+        for encoded in ["Sensor,Feed", r#""Sensor""#, "null", r#"["Sensor", 1]"#, r#"[""]"#,
+            r#"["  "]"#, r#"["line\nbreak"]"#, r#"{"node":"Sensor"}"#] {
+            assert!(parse_trend_node_ids(encoded, "nodes", false).is_err(), "{encoded}");
+        }
+        assert!(serde_json::from_value::<TrendsQuery>(serde_json::json!({
+            "tags": "Sensor:PV", "start": "-1h"
+        })).is_err());
+    }
+}

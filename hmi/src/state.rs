@@ -16,6 +16,9 @@ pub struct AppState {
     pub settings: Arc<crate::config::AppSettings>,
     pub historian_config: HistorianConfig,
     pub auth: Arc<AuthService>,
+    pub reports: Arc<crate::simulation_reports::ReportStore>,
+    pub research: Arc<crate::research::ResearchStore>,
+    pub runtime: Arc<crate::runtime::RuntimeStore>,
 }
 
 impl FromRef<AppState> for Arc<AuthService> {

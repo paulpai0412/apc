@@ -83,6 +83,7 @@
         "node_ids": {
           "pv": "CSTR_Cooling:PV",
           "sp": "CSTR_Cooling:SP",
+          "applied_sp": "CSTR_Cooling:AppliedSP",
           "op": "CSTR_Cooling:OP",
           "mode": "CSTR_Cooling:Mode",
           "mode_target": "CSTR_Cooling:ModeTarget",
@@ -106,7 +107,7 @@
           "high": 12
         },
         "node_ids": {
-          "pv": "CSTR_Feed:PV",
+          "pv": "CSTR_Feed:AcquiredPV",
           "limits": {
             "high": "CSTR_Feed:HighLimit",
             "low": "CSTR_Feed:LowLimit"

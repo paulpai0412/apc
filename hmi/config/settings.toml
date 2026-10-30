@@ -66,3 +66,19 @@ relative_percent = 0.0
 [hmi_auth]
 database_url = "sqlite:config/hmi.db"
 session_inactivity_minutes = 60
+
+[research]
+# Local-only Autoresearch is opt-in. Use a separate HMI configuration with
+# runtime.connect_opcua=false and historian.enabled=false before enabling it.
+# All paths below must be absolute; never accept them from browser requests.
+enabled = false
+command_timeout_seconds = 120 # Short commands only; background runs have no wall-clock limit.
+# directory = "/absolute/path/to/disposable-research"
+# python = "/usr/bin/python3"
+# script = "/absolute/path/to/AuTHRity-APC/validation/research.py"
+# binary = "/absolute/path/to/apc_engine/target/release/authrity-apc-engine"
+# bridge = "/usr/bin/wine"
+# bridge_args = ["/absolute/path/to/AuthrityOpcDaBridge.exe"]
+# Launch this HMI with its isolated WINEPREFIX. Worker state/logs live under
+# directory/runs; no production OPC connection or automatic deployment occurs.
+# CSV import accepts JSON request bodies up to 32 MiB (including JSON escaping).

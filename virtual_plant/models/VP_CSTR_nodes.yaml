@@ -1,14 +1,44 @@
+model_binding:
+  schema_version: 1
+  controller_name: "VP_CSTR"
+  sample_time: 10
+  prediction_horizon: 30
+  control_horizon: 5
+  cvs:
+    - {"name":"CSTR_Temp","description":"Reactor Internal Temperature","units":"K","node_ids":{"pv":"CSTR_Temp:PV","target":"CSTR_Temp:Target","prediction":"CSTR_Temp:Prediction","limits":{"high":"CSTR_Temp:HighLimit","low":"CSTR_Temp:LowLimit","hh":"CSTR_Temp:HighHighLimit","ll":"CSTR_Temp:LowLowLimit"}}}
+    - {"name":"CSTR_Conc","description":"Concentration of Reactant A","units":"kmol/m3","node_ids":{"pv":"CSTR_Conc:PV","target":"CSTR_Conc:Target","prediction":"CSTR_Conc:Prediction","limits":{"high":"CSTR_Conc:HighLimit","low":"CSTR_Conc:LowLimit","hh":"CSTR_Conc:HighHighLimit","ll":"CSTR_Conc:LowLowLimit"}}}
+  mvs:
+    - {"name":"CSTR_Cooling","description":"Cooling Jacket Temperature Setpoint","units":"K","node_ids":{"pv":"CSTR_Cooling:PV","sp":"CSTR_Cooling:SP","applied_sp":"CSTR_Cooling:AppliedSP","op":"CSTR_Cooling:OP","mode":"CSTR_Cooling:Mode","mode_target":"CSTR_Cooling:ModeTarget","future_plan":"CSTR_Cooling:FuturePlan","limits":{"high":"CSTR_Cooling:HighLimit","low":"CSTR_Cooling:LowLimit","hh":"CSTR_Cooling:HighHighLimit","ll":"CSTR_Cooling:LowLowLimit"}}}
+  dvs:
+    - {"name":"CSTR_Feed","description":"Feed Flow Rate","units":"m3/h","node_ids":{"pv":"CSTR_Feed:AcquiredPV","limits":{"high":"CSTR_Feed:HighLimit","low":"CSTR_Feed:LowLimit"}}}
 nodes:
   # --- SYSTEM: VP_CSTR ---
   - nodeId: "VP_CSTR:ControlNodes"
     nodeClass: "Object"
     browseName: "VP_CSTR:ControlNodes"
 
+  # Simulator-owned frame marker and acquired process feedback. Zero is not fresh.
+  - nodeId: "VP_CSTR:AcquisitionSequence"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+    comment: "Odd before acquisition; next even only after the complete checked frame"
+  - nodeId: "CSTR_Cooling:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+    comment: "Model MV node_ids.applied_sp; sampled effective SP, not PID OP"
+  - nodeId: "CSTR_Feed:AcquiredPV"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+    comment: "Model DV node_ids.pv; sampled CSTR_Feed:PV disturbance input"
+
   - nodeId: "VP_CSTR:OperatingMode"
     nodeClass: "Variable"
     dataType: "Int32"
     initialValue: 0
-    comment: "0=Manual, 1=Auto"
+    comment: "0=Idle, 1=Monitor, 2=Engage request; readiness and PID modes still gate commands"
   - nodeId: "VP_CSTR:Heartbeat"
     nodeClass: "Variable"
     dataType: "Int32"
@@ -29,16 +59,11 @@ nodes:
     nodeClass: "Variable"
     dataType: "Double"
     initialValue: 0
-  - nodeId: "VP_CSTR:ModelSelect"
+  - nodeId: "VP_CSTR:ControlObservation"
     nodeClass: "Variable"
     dataType: "String"
     initialValue: ""
-    comment: "Write model filename to trigger hot-swap"
-  - nodeId: "VP_CSTR:AvailableModels"
-    nodeClass: "Variable"
-    dataType: "StringArray"
-    initialValue: []
-    comment: "List of available model files"
+    comment: "Engine measured-performance JSON; advisory, not command authority"
   - nodeId: "VP_CSTR:ConfigurationStatus"
     nodeClass: "Variable"
     dataType: "String"

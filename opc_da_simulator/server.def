@@ -1,0 +1,6 @@
+LIBRARY authrity_opc_da
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE
+    DllRegisterServer PRIVATE
+    DllUnregisterServer PRIVATE

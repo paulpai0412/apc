@@ -123,16 +123,35 @@ fn default_controller_host_clients(supervisors: &[ServiceConfig]) -> Vec<Control
 
 impl InfrastructureConfig {
     pub fn redacted_for_api(&self) -> Self {
-        let mut redacted = self.clone();
-        let (hmi_username, _) = self.resolve_hmi_username_password();
-        redacted.hmi_client.username = hmi_username;
-        redacted.hmi_client.password = None;
-        for client in &mut redacted.controller_host_clients {
-            let (username, _) = self.resolve_controller_host_username_password(&client.supervisor_id);
-            client.username = username;
-            client.password = None;
+        let username = |reference: &Option<String>, fallback: &Option<String>| {
+            reference.as_ref().and_then(|key| self.username_secrets.get(key))
+                .map(|secret| &secret.username).or(fallback.as_ref()).cloned()
+        };
+        Self {
+            supervisors: self.supervisors.clone(),
+            opc_servers: self.opc_servers.clone(),
+            username_secrets: HashMap::new(),
+            hmi_client: HmiClientSettings {
+                security_policy: self.hmi_client.security_policy.clone(),
+                security_mode: self.hmi_client.security_mode.clone(),
+                auth_mode: self.hmi_client.auth_mode.clone(),
+                username_ref: self.hmi_client.username_ref.clone(),
+                cert_ref: self.hmi_client.cert_ref.clone(),
+                username: username(&self.hmi_client.username_ref, &self.hmi_client.username),
+                password: None,
+            },
+            controller_host_clients: self.controller_host_clients.iter().map(|client| ControllerHostClientSettings {
+                supervisor_id: client.supervisor_id.clone(),
+                security_policy: client.security_policy.clone(),
+                security_mode: client.security_mode.clone(),
+                auth_mode: client.auth_mode.clone(),
+                username_ref: client.username_ref.clone(),
+                cert_ref: client.cert_ref.clone(),
+                username: username(&client.username_ref, &client.username),
+                password: None,
+            }).collect(),
+            opcua_defaults: self.opcua_defaults.clone(),
         }
-        redacted
     }
 
     pub fn with_secret_refs(mut self, existing: Option<&InfrastructureConfig>) -> Self {
@@ -305,13 +324,6 @@ impl InfrastructureConfig {
             if opc.auth_mode.is_none() {
                 opc.auth_mode = Some(self.hmi_client.auth_mode.clone());
             }
-        }
-
-        if self.hmi_client.username.is_none() {
-            self.hmi_client.username = Some("hmi".to_string());
-        }
-        if self.hmi_client.password.is_none() {
-            self.hmi_client.password = Some("password".to_string());
         }
 
         let mut synced_clients: Vec<ControllerHostClientSettings> = Vec::with_capacity(self.supervisors.len());
@@ -491,4 +503,60 @@ fn secret_ref_for_supervisor(supervisor_id: &str) -> String {
         .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
         .collect();
     format!("controller_host_{}", sanitized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_credentials_survive_reload_and_password_omission() {
+        let previous = InfrastructureConfig::default().with_secret_refs(None);
+        let mut submitted = previous.redacted_for_api();
+        submitted.hmi_client.username = Some("updated-local-user".into());
+        submitted.hmi_client.password = Some("updated-local-test-secret".into());
+        let mut saved = submitted.with_secret_refs(Some(&previous));
+        saved.normalize_defaults();
+        let mut loaded: InfrastructureConfig =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        loaded.normalize_defaults();
+        let credentials = loaded.resolve_hmi_username_password();
+        assert_eq!(credentials.0.as_deref(), Some("updated-local-user"));
+        assert_eq!(credentials.1.as_deref(), Some("updated-local-test-secret"));
+        assert!(loaded.hmi_client.password.is_none());
+
+        let mut unchanged = loaded.redacted_for_api().with_secret_refs(Some(&loaded));
+        unchanged.normalize_defaults();
+        assert_eq!(unchanged.resolve_hmi_username_password(), credentials);
+        assert!(unchanged.redacted_for_api().username_secrets.is_empty());
+    }
+
+    #[test]
+    fn api_view_retains_identity_without_disclosing_or_erasing_connection_secrets() {
+        let config: InfrastructureConfig = serde_json::from_value(serde_json::json!({
+            "supervisors": [],
+            "opc_servers": [],
+            "username_secrets": {
+                "hmi_client_default": {"username": "hmi-test", "password": "local-hmi-test-secret"},
+                "host-secret": {"username": "host-test", "password": "local-host-test-secret"}
+            },
+            "controller_host_clients": [{
+                "supervisor_id": "host-a",
+                "security_policy": "Basic256Sha256",
+                "security_mode": "SignAndEncrypt",
+                "auth_mode": "Username",
+                "username_ref": "host-secret"
+            }]
+        })).unwrap();
+
+        let public = serde_json::to_value(config.redacted_for_api()).unwrap();
+        assert!(public["username_secrets"].as_object().unwrap().is_empty());
+        assert_eq!(public["hmi_client"]["username"], "hmi-test");
+        assert_eq!(public["hmi_client"]["username_ref"], "hmi_client_default");
+        assert!(public["hmi_client"]["password"].is_null());
+        assert_eq!(public["controller_host_clients"][0]["username"], "host-test");
+        assert!(public["controller_host_clients"][0]["password"].is_null());
+        assert_eq!(config.resolve_hmi_username_password().1.as_deref(), Some("local-hmi-test-secret"));
+        assert_eq!(config.resolve_controller_host_username_password("host-a").1.as_deref(), Some("local-host-test-secret"));
+    }
 }

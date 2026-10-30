@@ -1,12 +1,14 @@
 // src/modelloader.rs
 use crate::config::UnifiedModel;
-use anyhow::{Result, Context, anyhow};
+use anyhow::{Result, Context, anyhow, ensure};
 use std::fs::File;
 use std::io::{BufReader, BufRead};
 
 /// Load a parametric model (FOPDT: gain, tau, dead_time)
 /// Generates step response curves from FOPDT parameters
 pub fn load_parametric_model(model: &UnifiedModel) -> Result<Vec<Vec<Vec<f64>>>> {
+    model.validate_control_strategy()?;
+    model.sample_interval()?;
     if model.metadata.model_type != "parametric" {
         return Err(anyhow!("Model type must be 'parametric', got: {}", model.metadata.model_type));
     }
@@ -22,6 +24,12 @@ pub fn load_parametric_model(model: &UnifiedModel) -> Result<Vec<Vec<Vec<f64>>>>
        model.physics.dead_time.len() != num_cv {
         return Err(anyhow!("Physics matrix row count mismatch"));
     }
+    for matrix in [&model.physics.gain, &model.physics.tau, &model.physics.dead_time] {
+        ensure!(matrix.iter().all(|row| row.len() == num_mv && row.iter().all(|v| v.is_finite())),
+            "Physics matrix column count mismatch or nonfinite coefficient");
+    }
+    ensure!(model.physics.tau.iter().flatten().all(|v| *v >= 0.0)
+        && model.physics.dead_time.iter().flatten().all(|v| *v >= 0.0), "Negative FOPDT time constant/dead time");
 
     let mut step_coefficients = Vec::with_capacity(num_cv);
 
@@ -44,16 +52,17 @@ pub fn load_parametric_model(model: &UnifiedModel) -> Result<Vec<Vec<Vec<f64>>>>
 }
 
 /// Load a step response model (direct coefficients)
-/// Just validates and returns the coefficients as-is
+/// Preserve each finite, nonempty identified FIR curve independently of the prediction horizon.
 /// Returns (mv_coefficients, dv_coefficients)
 pub fn load_stepresponse_model(model: &UnifiedModel) -> Result<(Vec<Vec<Vec<f64>>>, Vec<Vec<Vec<f64>>>)> {
+    model.validate_control_strategy()?;
+    model.sample_interval()?;
     if model.metadata.model_type != "step_response" {
         return Err(anyhow!("Model type must be 'step_response', got: {}", model.metadata.model_type));
     }
 
     let num_cv = model.variables.cvs.len();
     let num_mv = model.variables.mvs.len();
-    let p_horizon = model.tuning.prediction_horizon;
 
     // Validate dimensions
     if model.physics.step_coefficients.len() != num_cv {
@@ -73,10 +82,10 @@ pub fn load_stepresponse_model(model: &UnifiedModel) -> Result<(Vec<Vec<Vec<f64>
         }
 
         for (mv_idx, coeffs) in cv_row.iter().enumerate() {
-            if coeffs.len() != p_horizon {
+            if coeffs.is_empty() || coeffs.iter().any(|value| !value.is_finite()) {
                 return Err(anyhow!(
-                    "Step coefficient length mismatch at CV {} MV {}: expected {}, got {}", 
-                    cv_idx, mv_idx, p_horizon, coeffs.len()
+                    "Step response must be nonempty and finite at CV {} MV {}",
+                    cv_idx, mv_idx
                 ));
             }
         }
@@ -102,16 +111,16 @@ pub fn load_stepresponse_model(model: &UnifiedModel) -> Result<(Vec<Vec<Vec<f64>
             }
 
             for (dv_idx, coeffs) in cv_row.iter().enumerate() {
-                if coeffs.len() != p_horizon {
+                if coeffs.is_empty() || coeffs.iter().any(|value| !value.is_finite()) {
                     return Err(anyhow!(
-                        "DV coefficient length mismatch at CV {} DV {}: expected {}, got {}", 
-                        cv_idx, dv_idx, p_horizon, coeffs.len()
+                        "DV response must be nonempty and finite at CV {} DV {}",
+                        cv_idx, dv_idx
                     ));
                 }
             }
         }
 
-        println!("✅ Validated DV coefficients: {} CVs × {} DVs × {} steps", num_cv, num_dv, p_horizon);
+        println!("Validated DV coefficients: {} CVs × {} DVs; full identified tails retained", num_cv, num_dv);
     }
 
     Ok((model.physics.step_coefficients.clone(), model.physics.dv_coefficients.clone()))

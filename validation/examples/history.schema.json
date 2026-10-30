@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Offline MPC canonical history",
+  "description": "Runtime additionally enforces finite numbers, equal row counts, model variable order/width, and uniform positive sample_time matching the model. First row is the assumed steady-state operating point. No interpolation or missing values.",
+  "type": "object",
+  "required": ["sample_time", "time_seconds", "cv", "mv", "dv"],
+  "properties": {
+    "sample_time": {"type": "number", "exclusiveMinimum": 0},
+    "time_seconds": {"type": "array", "minItems": 2, "items": {"type": "number"}},
+    "cv": {"$ref": "#/$defs/rows"},
+    "mv": {"$ref": "#/$defs/rows"},
+    "dv": {"$ref": "#/$defs/rows"},
+    "provenance": {"type": "object", "properties": {"source_url": {"type": "string"}, "license": {"type": "string"}, "synthetic": {"type": "boolean"}}, "additionalProperties": true}
+  },
+  "additionalProperties": true,
+  "$defs": {"rows": {"type": "array", "minItems": 2, "items": {"type": "array", "items": {"type": "number"}}}}
+}

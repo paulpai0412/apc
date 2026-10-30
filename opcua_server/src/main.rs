@@ -15,7 +15,7 @@ async fn main() {
     config::ensure_server_conf_exists();
 
     // Load configuration
-    let cfg = config::Config::load();
+    let cfg = config::Config::load().expect("Cannot load hot-reload API configuration");
 
     // Build OPC UA server
     let (server, handle) = bridges::opcua::build_opcua_server();
@@ -35,7 +35,7 @@ async fn main() {
 
     // Create and spawn the hot-reload API server
     let app = bridges::web_api::create_router(shared_state);
-    let api_addr = SocketAddr::from(([0, 0, 0, 0], cfg.api.port));
+    let api_addr = SocketAddr::new(cfg.api.bind_address, cfg.api.port);
     println!("🚀 Hot-Reload API listening on http://{}", api_addr);
 
     tokio::spawn(async move {

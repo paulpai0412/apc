@@ -10,11 +10,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@react-three/fiber": "^9.4.0",
     "@tailwindcss/vite": "^4.1.18",
     "lucide-react": "^0.562.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "recharts": "^3.6.0",
+    "three": "^0.180.0",
     "zustand": "^5.0.10"
   },
   "devDependencies": {
@@ -22,6 +24,7 @@
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.180.0",
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.23",
     "eslint": "^9.39.1",

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, ensure, Context, Result};
 use questdb::ingress::{Sender, Buffer, TimestampNanos, ProtocolVersion};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
@@ -20,7 +20,73 @@ enum LoggedValue {
 #[derive(Debug, Clone)]
 struct LoggedSample {
     value: LoggedValue,
+    status: u32,
     logged_at: Instant,
+}
+
+// Never evict an identity and accidentally accept an old snapshot as new evidence.
+const MAX_SOURCE_IDENTITIES: usize = 16_384;
+
+struct SourceSamples {
+    timestamp: i64,
+    value: serde_json::Value,
+    status: u32,
+    conflicted: bool,
+    logged: Option<LoggedSample>,
+}
+
+#[derive(Default)]
+struct Recorder {
+    sources: HashMap<String, HashMap<String, SourceSamples>>,
+    identity_count: usize,
+}
+
+impl Recorder {
+    /// Only new source acquisitions enter deadband evaluation. ReadAll is not an acquisition.
+    /// Equal-time mutations are retained as Bad evidence; older arrivals are rejected visibly.
+    /// Memory is bounded by identities, not acquisition count; a full registry fails closed.
+    fn record(&mut self, buffer: &mut Buffer, config: &HistorianConfig, update: &OpcUpdate, now: Instant) -> Result<bool> {
+        if update.internal { return Ok(false); }
+        let timestamp = source_timestamp(update)?;
+        let previous = self.sources.get(&update.source_endpoint).and_then(|nodes| nodes.get(&update.node_id));
+        let mut conflicted = false;
+        if let Some(previous) = previous {
+            ensure!(timestamp >= previous.timestamp, "Out-of-order OPC source timestamp rejected; no acquisition invented");
+            if timestamp == previous.timestamp {
+                if update.value == previous.value && update.status == previous.status {
+                    return Ok(false);
+                }
+                conflicted = true;
+            }
+        } else {
+            ensure!(self.identity_count < MAX_SOURCE_IDENTITIES, "Historian source identity limit reached");
+        }
+        let current = logged_value_from_json(&update.value);
+        let should_log = conflicted || previous.is_some_and(|sample| sample.conflicted) || should_log_update(
+            config, &update.node_id, &current, update.status,
+            previous.and_then(|sample| sample.logged.as_ref()), now,
+        );
+        if should_log {
+            write_to_buffer(buffer, &config.table_name, update, timestamp, !conflicted)?;
+        }
+        let new_identity = previous.is_none();
+        if new_identity {
+            self.sources.entry(update.source_endpoint.clone()).or_default().insert(update.node_id.clone(), SourceSamples {
+                timestamp, value: serde_json::Value::Null, status: update.status,
+                conflicted: false, logged: None,
+            });
+            self.identity_count += 1;
+        }
+        let source = self.sources.get_mut(&update.source_endpoint).unwrap().get_mut(&update.node_id).unwrap();
+        source.timestamp = timestamp;
+        source.value.clone_from(&update.value);
+        source.status = update.status;
+        source.conflicted = conflicted;
+        if should_log {
+            source.logged = Some(LoggedSample { value: current, status: update.status, logged_at: now });
+        }
+        Ok(should_log)
+    }
 }
 
 fn get_field(node_id: &str) -> Option<&str> {
@@ -83,16 +149,20 @@ fn should_log_update(
     config: &HistorianConfig,
     node_id: &str,
     current: &LoggedValue,
-    last_logged: &HashMap<String, LoggedSample>,
+    status: u32,
+    previous: Option<&LoggedSample>,
     now: Instant,
 ) -> bool {
     if !config.deadband.enabled {
         return true;
     }
 
-    let Some(previous) = last_logged.get(node_id) else {
+    let Some(previous) = previous else {
         return true;
     };
+    if status != previous.status {
+        return true;
+    }
 
     let (absolute, relative_percent, max_silence_sec) = deadband_settings_for_node(config, node_id);
     if max_silence_sec > 0 && now.duration_since(previous.logged_at).as_secs() >= max_silence_sec {
@@ -118,7 +188,7 @@ fn should_log_update(
 /// 
 /// Subscribes to OPC UA updates and writes to QuestDB using ILP (InfluxDB Line Protocol).
 /// Uses batching for performance - flushes every N records or every X milliseconds.
-/// Additionally requests periodic snapshots of all nodes to ensure constant values are logged.
+/// Periodic reads recover missed new samples, never fabricate fresh constant-value acquisitions.
 pub async fn run_historian(
     config: HistorianConfig,
     mut rx: broadcast::Receiver<OpcUpdate>,
@@ -135,7 +205,7 @@ pub async fn run_historian(
     // Connect to QuestDB ILP endpoint
     let mut sender = Sender::from_conf(&format!("tcp::addr={}:{};", config.host, config.ilp_port))?;
     let mut buffer = Buffer::new(ProtocolVersion::V1);
-    let mut last_logged: HashMap<String, LoggedSample> = HashMap::new();
+    let mut recorder = Recorder::default();
     
     let mut batch_count = 0;
     let mut flush_timer = interval(Duration::from_millis(config.flush_interval_ms));
@@ -151,27 +221,8 @@ pub async fn run_historian(
         tokio::select! {
             // Receive OPC UA updates
             Ok(update) = rx.recv() => {
-                // Skip internal metadata nodes
-                if update.node_id.starts_with("_") || update.node_id.starts_with("System:") {
-                    continue;
-                }
-
-                let current_value = logged_value_from_json(&update.value);
-                let now = Instant::now();
-                if !should_log_update(&config, &update.node_id, &current_value, &last_logged, now) {
-                    continue;
-                }
-
-                // Write to buffer using ILP format
-                match write_to_buffer(&mut buffer, &config.table_name, &update) {
-                    Ok(_) => {
-                        last_logged.insert(
-                            update.node_id.clone(),
-                            LoggedSample {
-                                value: current_value,
-                                logged_at: now,
-                            },
-                        );
+                match recorder.record(&mut buffer, &config, &update, Instant::now()) {
+                    Ok(true) => {
                         batch_count += 1;
                         
                         // Flush if batch size reached
@@ -183,6 +234,7 @@ pub async fn run_historian(
                             batch_count = 0;
                         }
                     }
+                    Ok(false) => {}
                     Err(e) => {
                         eprintln!("⚠️ Historian write error for {}: {}", update.node_id, e);
                     }
@@ -222,21 +274,22 @@ pub async fn run_historian(
     Ok(())
 }
 
-/// Writes an OPC UA update to QuestDB buffer using ILP format
-fn write_to_buffer(buffer: &mut Buffer, table_name: &str, update: &OpcUpdate) -> Result<()> {
-    // Parse node_id into tag and field
-    // Format: "CV1:PV" → tag=CV1, field=PV
-    let parts: Vec<&str> = update.node_id.split(':').collect();
-    let (tag, field) = if parts.len() == 2 {
-        (parts[0], parts[1])
-    } else {
-        ("unknown", update.node_id.as_str())
-    };
+/// Source clocks must be explicit, RFC3339 and representable by QuestDB ILP.
+/// OPC's unset 1601 epoch and pre-Unix values are not acquisition evidence.
+fn source_timestamp(update: &OpcUpdate) -> Result<i64> {
+    ensure!(!update.source_endpoint.trim().is_empty(), "Missing OPC source endpoint");
+    let timestamp = DateTime::parse_from_rfc3339(&update.timestamp)
+        .context("Invalid or missing OPC source timestamp")?
+        .timestamp_nanos_opt().context("OPC source timestamp outside ILP nanosecond range")?;
+    ensure!(timestamp > 0, "OPC source timestamp must be after the Unix epoch");
+    Ok(timestamp)
+}
 
-    // Start ILP line: table_name,tag=value
-    buffer.table(table_name)?
-        .symbol("tag", tag)?
-        .symbol("field", field)?;
+/// Writes an OPC UA update to QuestDB buffer using ILP format
+fn write_to_buffer(buffer: &mut Buffer, table_name: &str, update: &OpcUpdate, timestamp: i64, evidence_valid: bool) -> Result<()> {
+    // Endpoint and physical identifier together identify a source; neither is inferred.
+    buffer.table(table_name)?.symbol("node_id", &update.node_id)?
+        .symbol("source_endpoint", &update.source_endpoint)?;
 
     // Write value based on type
     match &update.value {
@@ -248,7 +301,7 @@ fn write_to_buffer(buffer: &mut Buffer, table_name: &str, update: &OpcUpdate) ->
             }
         }
         serde_json::Value::Bool(b) => {
-            buffer.column_bool("value", *b)?;
+            buffer.column_f64("value", if *b { 1.0 } else { 0.0 })?;
         }
         serde_json::Value::String(s) => {
             buffer.column_str("value_str", s)?;
@@ -262,11 +315,11 @@ fn write_to_buffer(buffer: &mut Buffer, table_name: &str, update: &OpcUpdate) ->
         }
     }
 
-    // Add status code
-    buffer.column_i64("status", update.status as i64)?;
-
-    // Timestamp: use current time (QuestDB will use server time if not specified)
-    buffer.at(TimestampNanos::now())?;
+    // Preserve original quality; timestamp collisions are never eligible Good evidence.
+    buffer.column_i64("status", if evidence_valid { update.status } else { update.status | 0x8000_0000 } as i64)?;
+    buffer.column_i64("source_status", update.status as i64)?;
+    buffer.column_bool("evidence_valid", evidence_valid)?;
+    buffer.at(TimestampNanos::new(timestamp))?;
 
     Ok(())
 }
@@ -282,8 +335,6 @@ pub struct TimeSeriesPoint {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NodeHistory {
     pub node_id: String,
-    pub tag: String,
-    pub field: String,
     pub data: Vec<TimeSeriesPoint>,
 }
 
@@ -292,66 +343,71 @@ pub struct HistoricalQueryOptions {
     pub bucket_ms: Option<u64>,
 }
 
-fn format_sample_by_interval(bucket_ms: u64) -> String {
-    let ceil_div = |a: u64, b: u64| -> u64 { a.div_ceil(b) };
-
-    if bucket_ms % (60 * 60 * 1000) == 0 {
-        return format!("{}h", bucket_ms / (60 * 60 * 1000));
-    }
-    if bucket_ms % (60 * 1000) == 0 {
-        return format!("{}m", bucket_ms / (60 * 1000));
-    }
-    if bucket_ms % 1000 == 0 {
-        return format!("{}s", bucket_ms / 1000);
-    }
-
-    // Some QuestDB builds reject millisecond units in SAMPLE BY.
-    // Round up to the nearest supported whole-second bucket.
-    let seconds = ceil_div(bucket_ms, 1000).max(1);
-    format!("{}s", seconds)
-}
 
 fn build_raw_query(
     table_name: &str,
-    tag: &str,
-    field: &str,
+    node_id: &str,
     start_time: DateTime<Utc>,
     end_time: DateTime<Utc>,
 ) -> String {
     format!(
-        "SELECT timestamp, value FROM {} WHERE tag = '{}' AND field = '{}' AND timestamp >= '{}' AND timestamp < '{}' ORDER BY timestamp",
+        "SELECT timestamp, value, status, source_endpoint, evidence_valid FROM {} WHERE node_id = '{}' AND timestamp >= '{}' AND timestamp < '{}' ORDER BY timestamp LIMIT 500001",
         table_name,
-        tag,
-        field,
-        start_time.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
-        end_time.format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        node_id.replace('\'', "''"),
+        start_time.to_rfc3339(),
+        end_time.to_rfc3339()
     )
 }
 
-fn build_aggregated_query(
-    table_name: &str,
-    tag: &str,
-    field: &str,
-    start_time: DateTime<Utc>,
-    end_time: DateTime<Utc>,
-    bucket_ms: u64,
-) -> String {
-    let sample_by = format_sample_by_interval(bucket_ms);
-    // Keep syntax broadly compatible across QuestDB versions.
-    format!(
-        "SELECT timestamp, avg(value) FROM {} WHERE tag = '{}' AND field = '{}' AND timestamp >= '{}' AND timestamp < '{}' SAMPLE BY {}",
-        table_name,
-        tag,
-        field,
-        start_time.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
-        end_time.format("%Y-%m-%dT%H:%M:%S%.3fZ"),
-        sample_by,
-    )
+/// Validate the complete raw response before averaging can hide ambiguity or bad quality.
+/// One unscoped multi-signal request must have exactly one proven physical endpoint.
+fn decode_history_rows(rows: &[serde_json::Value], endpoint: &mut Option<String>, bucket_ms: Option<u64>) -> Result<Vec<TimeSeriesPoint>> {
+    ensure!(rows.len() <= 500_000, "Selected history exceeds 500000 raw samples per signal; narrow the time window");
+    let bucket_ms = bucket_ms.filter(|value| *value > 0)
+        .map(|value| value.div_ceil(1000).checked_mul(1000).and_then(|value| i64::try_from(value).ok())
+            .context("Historian bucket interval is out of range")).transpose()?;
+    let mut data = Vec::with_capacity(rows.len());
+    let mut previous = None;
+    let mut bucket: Option<(i64, f64, usize)> = None;
+    for row in rows {
+        let values = row.as_array().context("Invalid historian row")?;
+        let timestamp = values.first().and_then(serde_json::Value::as_str).context("Historian row has no timestamp")?;
+        let time = DateTime::parse_from_rfc3339(timestamp).context("Invalid historian source timestamp")?;
+        let nanos = time.timestamp_nanos_opt().filter(|value| *value > 0).context("Invalid historian source clock range")?;
+        ensure!(previous.is_none_or(|previous| nanos > previous), "Duplicate or unordered historian source time; evidence is ambiguous");
+        previous = Some(nanos);
+        let source = values.get(3).and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty()).context("Historian row lacks source endpoint provenance")?;
+        if let Some(endpoint) = endpoint.as_ref() {
+            ensure!(endpoint == source, "Mixed OPC endpoints cannot form one historian evidence window");
+        } else {
+            *endpoint = Some(source.to_owned());
+        }
+        ensure!(values.get(4).and_then(serde_json::Value::as_bool) == Some(true), "Historian source-time conflict or missing evidence validity");
+        let status = values.get(2).and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok()).context("Historian row lacks valid source quality")?;
+        ensure!(status & 0xc000_0000 == 0, "Historian evidence contains non-Good source quality");
+        let value = values.get(1).and_then(serde_json::Value::as_f64)
+            .filter(|value| value.is_finite()).context("Historian evidence contains missing or nonfinite numeric value")?;
+        if let Some(interval) = bucket_ms {
+            let start = time.timestamp_millis().div_euclid(interval) * interval;
+            if bucket.is_some_and(|(previous, _, _)| previous != start) {
+                let (start, mean, _) = bucket.take().unwrap();
+                data.push(TimeSeriesPoint { timestamp: DateTime::<Utc>::from_timestamp_millis(start).context("Invalid bucket timestamp")?.to_rfc3339(), value: mean });
+            }
+            let (_, mean, count) = bucket.get_or_insert((start, 0.0, 0));
+            *count += 1;
+            *mean = *mean * ((*count - 1) as f64 / *count as f64) + value / *count as f64;
+        } else {
+            data.push(TimeSeriesPoint { timestamp: timestamp.to_owned(), value });
+        }
+    }
+    if let Some((start, mean, _)) = bucket {
+        data.push(TimeSeriesPoint { timestamp: DateTime::<Utc>::from_timestamp_millis(start).context("Invalid bucket timestamp")?.to_rfc3339(), value: mean });
+    }
+    Ok(data)
 }
 
-fn round_questdb_value(value: f64) -> f64 {
-    (value * 100.0).round() / 100.0
-}
 
 /// Query historical data from QuestDB for step response analysis
 /// 
@@ -364,158 +420,43 @@ pub async fn query_historical_data(
     node_ids: Vec<String>,
     options: HistoricalQueryOptions,
 ) -> Result<Vec<NodeHistory>> {
+    ensure!(start_time < end_time, "End must be later than start");
+    ensure!(!node_ids.is_empty() && node_ids.len() <= 256, "Select between 1 and 256 signals");
+    ensure!(node_ids.iter().all(|node| !node.is_empty() && node.len() <= 512), "Invalid signal identifier");
     if !config.enabled {
         return Ok(vec![]);
     }
-
-    let client = reqwest::Client::new();
-    let mut results = Vec::new();
-
+    ensure!(!config.table_name.is_empty() && config.table_name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'), "Invalid historian table identifier");
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
+    let url = format!("http://{}:{}/exec", config.host, config.rest_port);
+    let mut results = Vec::with_capacity(node_ids.len());
+    let mut endpoint = None;
     for node_id in node_ids {
-        // Parse node_id into tag:field
-        let parts: Vec<&str> = node_id.split(':').collect();
-        let (tag, field) = if parts.len() == 2 {
-            (parts[0], parts[1])
-        } else {
-            continue;
-        };
-
-        let aggregated_query = options
-            .bucket_ms
-            .filter(|v| *v > 0)
-            .map(|bucket_ms| {
-                build_aggregated_query(
-                    &config.table_name,
-                    tag,
-                    field,
-                    start_time,
-                    end_time,
-                    bucket_ms,
-                )
-            });
-
-        let raw_query = build_raw_query(
-            &config.table_name,
-            tag,
-            field,
-            start_time,
-            end_time,
-        );
-
-        let query = aggregated_query.clone().unwrap_or_else(|| raw_query.clone());
-
-        // Query QuestDB REST API
-        let url = format!("http://{}:{}/exec", config.host, config.rest_port);
-        let response = client
-            .get(&url)
-            .query(&[("query", &query)])
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<no body>".to_string());
-
-            // If aggregated query fails, fall back to raw points for compatibility.
-            if aggregated_query.is_some() {
-                eprintln!(
-                    "⚠️ QuestDB aggregated query failed for {}: {} | {}. Retrying raw.",
-                    node_id, status, body
-                );
-
-                let retry = client
-                    .get(&url)
-                    .query(&[("query", &raw_query)])
-                    .send()
-                    .await?;
-
-                if !retry.status().is_success() {
-                    let retry_status = retry.status();
-                    let retry_body = retry
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "<no body>".to_string());
-                    eprintln!(
-                        "⚠️ QuestDB raw retry failed for {}: {} | {}",
-                        node_id, retry_status, retry_body
-                    );
-                    continue;
-                }
-
-                let json: serde_json::Value = retry.json().await?;
-                let mut data_points = Vec::new();
-
-                if let Some(dataset) = json["dataset"].as_array() {
-                    for row in dataset {
-                        if let Some(arr) = row.as_array() {
-                            if arr.len() >= 2 {
-                                if let (Some(ts), Some(val)) = (arr[0].as_str(), arr[1].as_f64()) {
-                                    data_points.push(TimeSeriesPoint {
-                                        timestamp: ts.to_string(),
-                                        value: round_questdb_value(val),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-
-                results.push(NodeHistory {
-                    node_id: node_id.clone(),
-                    tag: tag.to_string(),
-                    field: field.to_string(),
-                    data: data_points,
-                });
-
-                continue;
-            }
-
-            eprintln!("⚠️ QuestDB query failed for {}: {} | {}", node_id, status, body);
-            continue;
-        }
-
-        // Parse JSON response
+        let query = build_raw_query(&config.table_name, &node_id, start_time, end_time);
+        let response = client.get(&url).query(&[("query", query)]).send().await?
+            .error_for_status().context("Historian query failed; exact node_id storage is required")?;
         let json: serde_json::Value = response.json().await?;
-        let mut data_points = Vec::new();
-
-        if let Some(dataset) = json["dataset"].as_array() {
-            for row in dataset {
-                if let Some(arr) = row.as_array() {
-                    if arr.len() >= 2 {
-                        if let (Some(ts), Some(val)) = (arr[0].as_str(), arr[1].as_f64()) {
-                            data_points.push(TimeSeriesPoint {
-                                timestamp: ts.to_string(),
-                                        value: round_questdb_value(val),
-                            });
-                        }
-                    }
-                }
-            }
+        if let Some(error) = json.get("error") {
+            bail!("Historian query rejected: {error}");
         }
-
-        results.push(NodeHistory {
-            node_id: node_id.clone(),
-            tag: tag.to_string(),
-            field: field.to_string(),
-            data: data_points,
-        });
+        let rows = json.get("dataset").and_then(serde_json::Value::as_array)
+            .context("Historian response has no dataset")?;
+        let data = decode_history_rows(rows, &mut endpoint, options.bucket_ms)?;
+        results.push(NodeHistory { node_id, data });
     }
-
     Ok(results)
 }
 
-/// Get available tags from QuestDB (for UI dropdowns)
+/// Get exact physical node identifiers recorded by the historian.
 pub async fn get_available_tags(config: &HistorianConfig) -> Result<Vec<String>> {
     if !config.enabled {
         return Ok(vec![]);
     }
+    ensure!(!config.table_name.is_empty() && config.table_name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'), "Invalid historian table identifier");
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
     let query = format!(
-        "SELECT DISTINCT tag FROM {} ORDER BY tag",
+        "SELECT DISTINCT node_id FROM {} WHERE node_id IS NOT NULL ORDER BY node_id",
         config.table_name
     );
 
@@ -524,21 +465,217 @@ pub async fn get_available_tags(config: &HistorianConfig) -> Result<Vec<String>>
         .get(&url)
         .query(&[("query", &query)])
         .send()
-        .await?;
+        .await?.error_for_status().context("Historian catalog requires exact node_id storage")?;
 
     let json: serde_json::Value = response.json().await?;
-    let mut tags = Vec::new();
-
-    if let Some(dataset) = json["dataset"].as_array() {
-        for row in dataset {
-            if let Some(arr) = row.as_array() {
-                if let Some(tag) = arr.get(0).and_then(|v| v.as_str()) {
-                    tags.push(tag.to_string());
-                }
-            }
-        }
+    if let Some(error) = json.get("error") {
+        bail!("Historian catalog rejected: {error}");
     }
+    let rows = json.get("dataset").and_then(serde_json::Value::as_array)
+        .context("Historian catalog has no dataset")?;
+    let tags = rows.iter().map(|row| {
+        row.get(0).and_then(serde_json::Value::as_str).map(str::to_owned)
+            .context("Historian catalog row has no node identifier")
+    }).collect::<Result<Vec<_>>>()?;
 
     Ok(tags)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> HistorianConfig {
+        let settings: crate::config::AppSettings = toml::from_str(include_str!("../config/settings.toml")).unwrap();
+        let mut config = settings.historian;
+        config.deadband.enabled = false;
+        config
+    }
+
+    fn update(node: &str, timestamp: &str) -> OpcUpdate {
+        OpcUpdate {
+            node_id: node.to_owned(), value: serde_json::json!(42.5),
+            timestamp: timestamp.to_owned(), status: 0,
+            source_endpoint: "opc.tcp://plant-a:4840".to_owned(), internal: false,
+        }
+    }
+
+    #[test]
+    fn serialized_timestamp_is_source_time_not_receive_time() {
+        let mut buffer = Buffer::new(ProtocolVersion::V1);
+        Recorder::default().record(&mut buffer, &config(), &update("CV:PV", "2026-01-01T00:00:00.123456789Z"), Instant::now()).unwrap();
+        let line = std::str::from_utf8(buffer.as_bytes()).unwrap();
+        assert!(line.ends_with(" 1767225600123456789\n"), "{line}");
+        assert!(line.contains("source_endpoint=opc.tcp://plant-a:4840"), "{line}");
+    }
+
+    #[test]
+    fn invalid_source_clocks_never_serialize_as_current_good_samples() {
+        for timestamp in ["", "NaN", "Infinity", "not-a-clock", "9999-01-01T00:00:00Z", "1601-01-01T00:00:00Z"] {
+            let mut buffer = Buffer::new(ProtocolVersion::V1);
+            assert!(Recorder::default().record(&mut buffer, &config(), &update("CV:PV", timestamp), Instant::now()).is_err(), "{timestamp}");
+            assert!(buffer.as_bytes().is_empty());
+        }
+    }
+
+    #[test]
+    fn distinct_physical_nodes_never_alias_one_historian_series() {
+        let series = ["PV", "unknown:PV"].map(|node_id| {
+            let mut buffer = Buffer::new(ProtocolVersion::V1);
+            Recorder::default().record(&mut buffer, &config(), &update(node_id, "2026-01-01T00:00:00Z"), Instant::now()).unwrap();
+            buffer.as_bytes().split(|byte| *byte == b' ').next().unwrap().to_vec()
+        });
+        assert_ne!(series[0], series[1], "Different OPC nodes must remain independently queryable");
+    }
+
+    #[test]
+    fn repeated_snapshot_never_creates_a_new_acquisition_even_after_max_silence() {
+        let mut recorder = Recorder::default();
+        let mut buffer = Buffer::new(ProtocolVersion::V1);
+        let mut config = config();
+        config.deadband.enabled = true;
+        config.deadband.max_silence_sec = 1;
+        let now = Instant::now();
+        let sample = update("CV:PV", "2026-01-01T00:00:00Z");
+        assert!(recorder.record(&mut buffer, &config, &sample, now).unwrap());
+        let original = buffer.as_bytes().to_vec();
+        assert!(!recorder.record(&mut buffer, &config, &sample, now + Duration::from_secs(60)).unwrap());
+        assert_eq!(buffer.as_bytes(), original.as_slice());
+    }
+
+    #[test]
+    fn same_value_new_source_sample_obeys_deadband_without_forward_fill() {
+        let now = Instant::now();
+        for enabled in [false, true] {
+            let mut config = config();
+            config.deadband.enabled = enabled;
+            config.deadband.absolute_default = 1.0;
+            config.deadband.relative_percent_default = 0.0;
+            config.deadband.max_silence_sec = 10;
+            config.deadband.node_overrides.clear();
+            config.deadband.field_overrides.clear();
+            let mut recorder = Recorder::default();
+            let mut buffer = Buffer::new(ProtocolVersion::V1);
+            assert!(recorder.record(&mut buffer, &config, &update("CV:PV", "2026-01-01T00:00:00Z"), now).unwrap());
+            assert_eq!(recorder.record(&mut buffer, &config, &update("CV:PV", "2026-01-01T00:00:01Z"), now + Duration::from_secs(1)).unwrap(), !enabled);
+            assert!(recorder.record(&mut buffer, &config, &update("CV:PV", "2026-01-01T00:00:10Z"), now + Duration::from_secs(11)).unwrap());
+            let lines = std::str::from_utf8(buffer.as_bytes()).unwrap();
+            assert_eq!(lines.lines().count(), if enabled { 2 } else { 3 });
+            assert!(lines.ends_with(" 1767225610000000000\n"));
+        }
+    }
+
+    #[test]
+    fn equal_source_time_value_or_quality_changes_poison_evidence_and_recovery_is_new() {
+        for quality_change in [false, true] {
+            let mut recorder = Recorder::default();
+            let mut buffer = Buffer::new(ProtocolVersion::V1);
+            let mut config = config();
+            config.deadband.enabled = true;
+            config.deadband.absolute_default = 100.0;
+            config.deadband.max_silence_sec = 0;
+            let now = Instant::now();
+            let mut sample = update("CV:PV", "2026-01-01T00:00:00Z");
+            assert!(recorder.record(&mut buffer, &config, &sample, now).unwrap());
+            if quality_change { sample.status = 0x8000_0000; } else { sample.value = serde_json::json!(42.6); }
+            assert!(recorder.record(&mut buffer, &config, &sample, now).unwrap());
+            let lines = std::str::from_utf8(buffer.as_bytes()).unwrap();
+            let collision = lines.lines().nth(1).unwrap();
+            assert!(collision.contains("evidence_valid=f"), "{collision}");
+            assert!(collision.contains("status=2147483648i"), "{collision}");
+            assert!(collision.ends_with(" 1767225600000000000"), "{collision}");
+            assert!(!recorder.record(&mut buffer, &config, &sample, now).unwrap());
+            sample.timestamp = "2026-01-01T00:00:01Z".to_owned();
+            sample.status = 0;
+            assert!(recorder.record(&mut buffer, &config, &sample, now).unwrap());
+            assert_eq!(std::str::from_utf8(buffer.as_bytes()).unwrap().lines().count(), 3);
+        }
+    }
+
+    #[test]
+    fn endpoint_is_part_of_serialized_identity_and_missing_endpoint_is_rejected() {
+        let mut recorder = Recorder::default();
+        let mut buffer = Buffer::new(ProtocolVersion::V1);
+        let now = Instant::now();
+        let mut sample = update("CV:PV", "2026-01-01T00:00:00Z");
+        assert!(recorder.record(&mut buffer, &config(), &sample, now).unwrap());
+        sample.source_endpoint = "opc.tcp://plant-b:4840".to_owned();
+        assert!(recorder.record(&mut buffer, &config(), &sample, now).unwrap());
+        let lines: Vec<_> = std::str::from_utf8(buffer.as_bytes()).unwrap().lines().collect();
+        assert_ne!(lines[0].split(' ').next(), lines[1].split(' ').next());
+        sample.source_endpoint.clear();
+        assert!(recorder.record(&mut buffer, &config(), &sample, now).is_err());
+        assert_eq!(std::str::from_utf8(buffer.as_bytes()).unwrap().lines().count(), 2);
+    }
+
+    #[test]
+    fn history_rejects_mixed_sources_legacy_quality_and_collisions_before_averaging() {
+        let good = serde_json::json!(["2026-01-01T00:00:00Z", 42.5, 0, "opc.tcp://plant-a:4840", true]);
+        let next = serde_json::json!(["2026-01-01T00:00:01Z", 44.5, 0, "opc.tcp://plant-a:4840", true]);
+        let averaged = decode_history_rows(&[good.clone(), next.clone()], &mut None, Some(2000)).unwrap();
+        assert_eq!(averaged.len(), 1);
+        assert_eq!(averaged[0].value, 43.5);
+        for invalid in [
+            serde_json::json!(["2026-01-01T00:00:01Z", 44.5, 0, "opc.tcp://plant-b:4840", true]),
+            serde_json::json!(["2026-01-01T00:00:01Z", 44.5, 0, null, true]),
+            serde_json::json!(["2026-01-01T00:00:01Z", 44.5, 0, "opc.tcp://plant-a:4840", null]),
+            serde_json::json!(["2026-01-01T00:00:01Z", 44.5, 0, "opc.tcp://plant-a:4840", false]),
+            serde_json::json!(["2026-01-01T00:00:01Z", 44.5, 2147483648u32, "opc.tcp://plant-a:4840", true]),
+            serde_json::json!(["2026-01-01T00:00:00Z", 44.5, 2147483648u32, "opc.tcp://plant-a:4840", false]),
+            good.clone(),
+        ] {
+            assert!(decode_history_rows(&[good.clone(), invalid], &mut None, Some(2000)).is_err());
+        }
+        let mut endpoint = None;
+        decode_history_rows(&[good], &mut endpoint, None).unwrap();
+        let other_signal = serde_json::json!(["2026-01-01T00:00:00Z", 42.5, 0, "opc.tcp://plant-b:4840", true]);
+        assert!(decode_history_rows(&[other_signal], &mut endpoint, None).is_err());
+    }
+
+    #[test]
+    fn older_source_arrivals_are_rejected_without_relabeling_or_duplicate_rows() {
+        let mut recorder = Recorder::default();
+        let mut buffer = Buffer::new(ProtocolVersion::V1);
+        let config = config();
+        let now = Instant::now();
+        let original = update("CV:PV", "2026-01-01T00:00:00Z");
+        assert!(recorder.record(&mut buffer, &config, &original, now).unwrap());
+        assert!(recorder.record(&mut buffer, &config, &update("CV:PV", "2026-01-01T00:00:01Z"), now).unwrap());
+        let recorded = buffer.as_bytes().to_vec();
+        assert!(recorder.record(&mut buffer, &config, &original, now).is_err());
+        assert_eq!(buffer.as_bytes(), recorded.as_slice());
+    }
+
+    #[test]
+    fn full_identity_registry_refuses_new_sources_without_forgetting_existing_samples() {
+        let mut recorder = Recorder::default();
+        let mut buffer = Buffer::new(ProtocolVersion::V1);
+        let config = config();
+        let now = Instant::now();
+        for index in 0..MAX_SOURCE_IDENTITIES {
+            assert!(recorder.record(&mut buffer, &config, &update(&format!("CV{index}:PV"), "2026-01-01T00:00:00Z"), now).unwrap());
+            buffer.clear();
+        }
+        assert!(recorder.record(&mut buffer, &config, &update("overflow:PV", "2026-01-01T00:00:00Z"), now).is_err());
+        assert!(!recorder.record(&mut buffer, &config, &update("CV0:PV", "2026-01-01T00:00:00Z"), now).unwrap());
+        assert!(buffer.as_bytes().is_empty());
+        assert!(recorder.record(&mut buffer, &config, &update("CV0:PV", "2026-01-01T00:00:01Z"), now).unwrap());
+        assert_eq!(std::str::from_utf8(buffer.as_bytes()).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn deadband_keeps_quality_failure_and_recovery_without_numeric_change() {
+        let settings: crate::config::AppSettings = toml::from_str(include_str!("../config/settings.toml")).unwrap();
+        let mut config = settings.historian;
+        config.deadband.enabled = true;
+        config.deadband.absolute_default = 10.0;
+        let now = Instant::now();
+        let value = LoggedValue::Number(50.0);
+        let mut recorded = LoggedSample { value: value.clone(), status: 0, logged_at: now };
+        assert!(!should_log_update(&config, "CV:PV", &value, 0, Some(&recorded), now));
+        assert!(should_log_update(&config, "CV:PV", &value, 0x8000_0000, Some(&recorded), now));
+        recorded.status = 0x8000_0000;
+        assert!(should_log_update(&config, "CV:PV", &value, 0, Some(&recorded), now));
+    }
+}

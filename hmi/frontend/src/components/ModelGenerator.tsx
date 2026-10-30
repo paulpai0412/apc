@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { DEFAULT_MODEL, type CvOptimizationMode, type FullModel, type MvOptimizationMode, type VarConfig } from '../types/ModelConfig';
+import { DEFAULT_MODEL, defaultNodeIds, type CvOptimizationMode, type FullModel, type MvOptimizationMode, type VarConfig } from '../types/ModelConfig';
 import { Save, Upload, Download, Plus, Trash2, Activity, FileText, CheckCircle, ArrowDown, ArrowUp, Server, Network, Rocket, RefreshCw, AlertCircle } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { MatrixEditor } from './MatrixEditor';
 import StepResponseTool from './StepResponseTool';
 import { apiFetch } from '../lib/api';
+import { buildModelArtifacts, importControllerModel, type ModelArtifacts } from '../lib/modelArtifacts';
 
 // --- INFRASTRUCTURE TYPES ---
 interface ServiceConfig {
@@ -19,7 +20,7 @@ interface InfrastructureConfig {
     opc_servers: ServiceConfig[];
 }
 
-export const ModelGenerator = () => {
+export const ModelGenerator = ({ onNodesDeployed }: { onNodesDeployed: () => void }) => {
     const [model, setModel] = useState<FullModel>(DEFAULT_MODEL);
     const [activeTab, setActiveTab] = useState<"Vars" | "Physics" | "Tuning" | "StepResponse" | "Models" | "Export">("Vars");
     const [selectedGraph, setSelectedGraph] = useState<{cvIdx: number, inputIdx: number, inputType: 'MV' | 'DV'} | null>(null);
@@ -33,14 +34,14 @@ export const ModelGenerator = () => {
     
     // --- MODEL LOADING STATE ---
     const [showModelLoadModal, setShowModelLoadModal] = useState(false);
-    const [controllers, setControllers] = useState<Array<{id: string, models: string[], active_model?: string, state: any}>>([]);
+    const [controllers, setControllers] = useState<Array<{id: string, models: string[], active_model?: string, state: unknown}>>([]);
     const [loadingControllers, setLoadingControllers] = useState(false);
     const [showCvGuide, setShowCvGuide] = useState(false);
     const [showMvGuide, setShowMvGuide] = useState(false);
     const [showDvGuide, setShowDvGuide] = useState(false);
 
     const cvFieldHelp = [
-        { key: "Tag", text: "Node base name used to generate PV/Target/Prediction tags." },
+        { key: "Tag", text: "Variable identity used by engine diagnostics. Physical IDs are edited separately in Node mapping." },
         { key: "Description", text: "Operator-friendly label shown in tables and exports." },
         { key: "Units", text: "Engineering units for display and interpretation." },
         { key: "Weight", text: "Higher value increases priority to reduce this CV error." },
@@ -60,48 +61,10 @@ export const ModelGenerator = () => {
     ];
 
     const dvFieldHelp = [
-        { key: "Tag", text: "Measured disturbance name mapped to DV:PV node." },
+        { key: "Tag", text: "Measured disturbance identity; its physical PV is set in Node mapping." },
         { key: "Limits", text: "Expected range used for validation and warning checks." },
     ];
 
-    const parseCvOptimizationMode = (rawMode: any): CvOptimizationMode => {
-        if (!rawMode) return "target";
-        if (typeof rawMode === 'string') {
-            const normalized = rawMode.toLowerCase();
-            if (normalized === "zone" || normalized === "maximize" || normalized === "minimize") {
-                return normalized;
-            }
-            return "target";
-        }
-        const modeType = rawMode?.type?.toLowerCase?.();
-        if (modeType === "zone" || modeType === "maximize" || modeType === "minimize") {
-            return modeType;
-        }
-        return "target";
-    };
-
-    const parseMvOptimizationMode = (rawMode: any): MvOptimizationMode => {
-        if (!rawMode) return "target";
-        if (typeof rawMode === 'string') {
-            const normalized = rawMode.toLowerCase();
-            if (normalized === "maximize" || normalized === "minimize") {
-                return normalized;
-            }
-            return "target";
-        }
-        const modeType = rawMode?.type?.toLowerCase?.();
-        if (modeType === "maximize" || modeType === "minimize") {
-            return modeType;
-        }
-        return "target";
-    };
-
-    const normalizeModelMode = (rawMode: any): "parametric" | "step_response" => {
-        if (rawMode === "step_response_import" || rawMode === "step_response") {
-            return "step_response";
-        }
-        return "parametric";
-    };
 
     // Fetch Infrastructure on Mount
     useEffect(() => {
@@ -288,69 +251,13 @@ export const ModelGenerator = () => {
             
             const raw = await res.json();
             
-            const parseVars = (list: any[], prefix: string) => list?.map((v: any, i: number) => ({
-                id: `${prefix}_${i}_${Date.now()}`,
-                name: v.name,
-                desc: v.description || "",
-                units: v.units || "",
-                weight: v.weight ?? v.weight_r ?? 1,
-                alpha: v.alpha ?? 0.0,
-                ece_factor: v.ece_factor,
-                optimizationMode: prefix === 'cv' ? parseCvOptimizationMode(v.optimization_mode) : undefined,
-                mvOptimizationMode: prefix === 'mv' ? parseMvOptimizationMode(v.optimization_mode) : undefined,
-                maxMove: v.max_move,
-                target: v.target,
-                targetWeight: v.target_weight,
-                limits: {
-                    lowLow: v.limits?.low_low ?? 0,
-                    low: v.limits?.low ?? 0,
-                    target: v.limits?.target ?? 50,
-                    high: v.limits?.high ?? 100,
-                    highHigh: v.limits?.high_high ?? 100
-                }
-            })) || [];
-
-            const loadedModel: FullModel = {
-                meta: {
-                    name: raw.metadata?.name || "Controller_Model",
-                    desc: raw.metadata?.description || `Loaded from ${controllerId}`
-                },
-                mode: normalizeModelMode(raw.metadata?.model_type),
-                tuning: {
-                    sampleTime: raw.sample_time ?? raw.tuning?.sample_time ?? 20,
-                    tssMin: (raw.tuning?.prediction_horizon * (raw.sample_time || raw.tuning?.sample_time || 20)) / 60 || 20, 
-                    controlHorizon: raw.tuning?.control_horizon ?? 10,
-                    solverTol: raw.tuning?.solver_tolerance ?? 0.0001,
-                    maxIter: raw.tuning?.max_iterations ?? 50,
-                    terminalWeightFactor: raw.tuning?.terminal_weight_factor ?? 1
-                },
-                cvs: parseVars(raw.variables?.cvs, 'cv'),
-                mvs: parseVars(raw.variables?.mvs, 'mv'),
-                dvs: parseVars(raw.variables?.dvs, 'dv'), 
-                physics: {
-                    gain: raw.physics?.gain || [],
-                    tau: raw.physics?.tau || [],
-                    deadTime: raw.physics?.dead_time || [],
-                    gainDv: raw.physics?.gain_dv || [], 
-                    tauDv: raw.physics?.tau_dv || [],   
-                    deadTimeDv: raw.physics?.dead_time_dv || [] 
-                },
-                stepResponseData: (raw.physics?.step_coefficients && raw.physics.step_coefficients.length > 0) ? {
-                    fileName: raw.metadata?.name || "From Controller",
-                    stepCoefficients: raw.physics.step_coefficients,
-                    dvCoefficients: raw.physics.dv_coefficients || [],
-                    coefficients: raw.physics.step_coefficients,
-                    parsedAt: new Date().toISOString()
-                } : undefined
-            };
-            
+            const loadedModel = importControllerModel(raw);
             setModel(loadedModel);
-            updateMatrixSize(loadedModel.cvs, loadedModel.mvs, loadedModel.dvs);
             setShowModelLoadModal(false);
-            alert(`✅ Loaded model: ${loadedModel.meta.name}\n\nYou can now edit and redeploy.`);
+            alert(`Loaded model: ${loadedModel.meta.name}\nReview the explicit node mapping before deployment. No controller was started.`);
         } catch (err) {
             console.error(err);
-            alert("Failed to load model from controller.");
+            alert(`Failed to load model from controller: ${err instanceof Error ? err.message : String(err)}`);
         }
     };
 
@@ -363,72 +270,12 @@ export const ModelGenerator = () => {
             try {
                 const raw = JSON.parse(event.target?.result as string);
                 
-                const parseVars = (list: any[], prefix: string) => list?.map((v: any, i: number) => {
-                    const limits = {
-                        lowLow: v.limits?.low_low ?? 0,
-                        low: v.limits?.low ?? 0,
-                        target: v.limits?.target ?? 0,
-                        high: v.limits?.high ?? 100,
-                        highHigh: v.limits?.high_high ?? 100
-                    };
-                    // Auto-calculate ECE factor from span if not provided
-                    const ece_factor = v.ece_factor ?? (limits.high - limits.low);
-                    return {
-                        id: `${prefix}_${i}_${Date.now()}`,
-                        name: v.name,
-                        desc: v.description || "",
-                        units: v.units || "",
-                        weight: v.weight ?? (v.weight_r ?? 1.0), 
-                        alpha: v.alpha ?? 0.0,
-                        ece_factor: prefix === 'cv' ? ece_factor : undefined,
-                        optimizationMode: prefix === 'cv' ? parseCvOptimizationMode(v.optimization_mode) : undefined,
-                        mvOptimizationMode: prefix === 'mv' ? parseMvOptimizationMode(v.optimization_mode) : undefined,
-                        maxMove: v.max_move ?? 1.0,
-                        target: v.target,
-                        targetWeight: v.target_weight,
-                        limits
-                    };
-                }) || [];
-
-                const loadedModel: FullModel = {
-                    meta: {
-                        name: raw.metadata?.name || "Imported_Model",
-                        desc: raw.metadata?.description || ""
-                    },
-                    mode: normalizeModelMode(raw.metadata?.model_type),
-                    tuning: {
-                        sampleTime: raw.tuning?.sample_time ?? 20,
-                        tssMin: (raw.tuning?.prediction_horizon * (raw.tuning?.sample_time || 20)) / 60 || 20, 
-                        controlHorizon: raw.tuning?.control_horizon ?? 10,
-                        solverTol: raw.tuning?.solver_tolerance ?? 0.0001,
-                        maxIter: raw.tuning?.max_iterations ?? 50,
-                        terminalWeightFactor: raw.tuning?.terminal_weight_factor ?? 1
-                    },
-                    cvs: parseVars(raw.variables?.cvs, 'cv'),
-                    mvs: parseVars(raw.variables?.mvs, 'mv'),
-                    dvs: parseVars(raw.variables?.dvs, 'dv'), 
-                    physics: {
-                        gain: raw.physics?.gain || [],
-                        tau: raw.physics?.tau || [],
-                        deadTime: raw.physics?.dead_time || [],
-                        gainDv: raw.physics?.gain_dv || [], 
-                        tauDv: raw.physics?.tau_dv || [],   
-                        deadTimeDv: raw.physics?.dead_time_dv || [] 
-                    },
-                    stepResponseData: (raw.physics?.step_coefficients && raw.physics.step_coefficients.length > 0) ? {
-                        fileName: raw.metadata?.name || "From JSON",
-                        stepCoefficients: raw.physics.step_coefficients,
-                        dvCoefficients: raw.physics.dv_coefficients || [],
-                        coefficients: raw.physics.step_coefficients, // Backward compat
-                        parsedAt: new Date().toISOString()
-                    } : undefined
-                };
+                const loadedModel = importControllerModel(raw);
                 setModel(loadedModel);
-                updateMatrixSize(loadedModel.cvs, loadedModel.mvs, loadedModel.dvs);
                 alert(`Successfully loaded model: ${loadedModel.meta.name}`);
             } catch (err) {
                 console.error(err);
-                alert("Failed to parse JSON.");
+                alert(`Failed to import model: ${err instanceof Error ? err.message : String(err)}`);
             }
         };
         reader.readAsText(file);
@@ -617,6 +464,7 @@ export const ModelGenerator = () => {
                     return {
                         id: `cv_${i}_${Date.now()}`,
                         name,
+                        nodeIds: defaultNodeIds(name, 'cv'),
                         desc: `Imported from ${file.name}`,
                         units: cvUnits[i] || '',
                         weight: name.includes('OP') ? 0 : 1, // FC1OP, FC2OP get weight 0
@@ -629,6 +477,7 @@ export const ModelGenerator = () => {
                 const newMVs: VarConfig[] = mvNames.map((name, i) => ({
                     id: `mv_${i}_${Date.now()}`,
                     name,
+                    nodeIds: defaultNodeIds(name, 'mv'),
                     desc: `Imported from ${file.name}`,
                     units: mvUnits[i] || '',
                     weight: 1,
@@ -646,6 +495,7 @@ export const ModelGenerator = () => {
                     dvs: [], // Start with no DVs
                     tuning: {
                         ...model.tuning,
+                        predictionHorizon: horizon,
                         sampleTime,
                         tssMin,
                         controlHorizon: Math.min(10, horizon) // Default to 10 or horizon
@@ -698,8 +548,8 @@ export const ModelGenerator = () => {
                     ? model.mvs.findIndex(mv => mv.name === inputTag)
                     : model.dvs.findIndex(dv => dv.name === inputTag);
                 
-                let updatedMVs = [...model.mvs];
-                let updatedDVs = [...model.dvs];
+                const updatedMVs = [...model.mvs];
+                const updatedDVs = [...model.dvs];
                 let inputIdx = existingInputIdx;
                 
                 // Add input if it doesn't exist
@@ -707,6 +557,7 @@ export const ModelGenerator = () => {
                     const newInput: VarConfig = {
                         id: `${isMV ? 'mv' : 'dv'}_${Date.now()}`,
                         name: inputTag,
+                        nodeIds: defaultNodeIds(inputTag, isMV ? 'mv' : 'dv'),
                         desc: `Imported from ${file.name}`,
                         units: '',
                         weight: isMV ? 1 : 0,
@@ -724,7 +575,7 @@ export const ModelGenerator = () => {
                 }
                 
                 // Merge CVs and coefficients
-                let updatedCVs = [...model.cvs];
+                const updatedCVs = [...model.cvs];
                 const horizon = responses[0]?.coefficients.length || 45;
                 
                 // Initialize coefficient arrays if needed
@@ -764,6 +615,7 @@ export const ModelGenerator = () => {
                         const newCV: VarConfig = {
                             id: `cv_${Date.now()}_${cvTag}`,
                             name: cvTag,
+                            nodeIds: defaultNodeIds(cvTag, 'cv'),
                             desc: `Imported from ${file.name}`,
                             units: '',
                             weight: 1,
@@ -822,177 +674,22 @@ export const ModelGenerator = () => {
         a.click();
     };
 
-    // --- GENERATOR: YAML FOR OPC SERVER ---
-    const generateYaml = () => {
-        const cleanName = model.meta.name.replace(/[^a-zA-Z0-9_]/g, ""); // Match engine sanitization
-        const sysNode = cleanName || "System"; 
-        
-        // Create arrays without JSON.stringify to avoid quoted strings in YAML
-        const predictionLength = Math.ceil((model.tuning.tssMin * 60) / model.tuning.sampleTime);
-        const predArray = Array(predictionLength).fill(0.0);
-        const planArray = Array(model.tuning.controlHorizon).fill(0.0);
-        
-        const getDescLine = (desc: string) => desc ? `    description: "${desc.replace(/"/g, '\\"')}"\n` : "";
+    // JSON and node YAML share one validated physical-node mapping.
+    let artifacts: ModelArtifacts | undefined;
+    let artifactError = '';
+    try {
+        artifacts = buildModelArtifacts(model);
+    } catch (error) {
+        artifactError = error instanceof Error ? error.message : String(error);
+    }
 
-        let yaml = `nodes:\n  # --- SYSTEM: ${sysNode} ---\n  - nodeId: "${sysNode}:ControlNodes"\n    nodeClass: "Object"\n    browseName: "${sysNode}:ControlNodes"\n\n`;
-
-        ["OperatingMode", "Heartbeat", "NextRun", "ExecutionTimeMs", "SolverStatus", "ObjectiveFunction"].forEach(v => {
-             yaml += `  - nodeId: "${sysNode}:${v}"\n    nodeClass: "Variable"\n    dataType: "${v.includes('Execution') || v.includes('Objective') ? 'Double' : 'Int32'}"\n    initialValue: 0\n`;
-        });
-        
-        // Model Management Control Nodes
-        yaml += `  - nodeId: "${sysNode}:ModelSelect"\n    nodeClass: "Variable"\n    dataType: "String"\n    initialValue: ""\n    comment: "Write model filename to trigger hot-swap (e.g., 'Batman_v2_model.json')"\n`;
-        yaml += `  - nodeId: "${sysNode}:AvailableModels"\n    nodeClass: "Variable"\n    dataType: "StringArray"\n    initialValue: []\n    comment: "List of available model files in model directory"\n`;
-        yaml += `  - nodeId: "${sysNode}:ConfigurationStatus"\n    nodeClass: "Variable"\n    dataType: "String"\n    initialValue: ""\n    comment: "Status messages from model loading and configuration changes"\n`;
-        yaml += `  - nodeId: "${sysNode}:SaveConfiguration"\n    nodeClass: "Variable"\n    dataType: "Boolean"\n    initialValue: false\n    comment: "Write true to export current parameters to new JSON model file"\n`;
-        yaml += "\n";
-
-        // CV Nodes
-        model.cvs.forEach((cv) => {
-            yaml += `  # CV: ${cv.name}\n  - nodeId: "${cv.name}"\n    nodeClass: "Object"\n${getDescLine(cv.desc)}`;
-            const cvNodes = { "PV": 0.0, "Target": cv.limits.target, "LowLimit": cv.limits.low, "HighLimit": cv.limits.high, "LowLowLimit": cv.limits.lowLow, "HighHighLimit": cv.limits.highHigh };
-            Object.entries(cvNodes).forEach(([s, v]) => yaml += `  - nodeId: "${cv.name}:${s}"\n    nodeClass: "Variable"\n    dataType: "Double"\n    initialValue: ${v || 0}\n`);
-            ["Weight", "Alpha", "Bias", "SteadyState"].forEach(s => yaml += `  - nodeId: "${cv.name}:${s}"\n    nodeClass: "Variable"\n    dataType: "Double"\n    initialValue: 0.0\n`);
-            yaml += `  - nodeId: "${cv.name}:Prediction"\n    nodeClass: "Variable"\n    dataType: "DoubleArray"\n    initialValue: [${predArray.join(',')}]\n\n`;
-        });
-
-        // MV Nodes
-        model.mvs.forEach((mv) => {
-            yaml += `  # MV: ${mv.name}\n  - nodeId: "${mv.name}"\n    nodeClass: "Object"\n${getDescLine(mv.desc)}`;
-            const mvNodes = { "PV": 0.0, "SP": 0.0, "OP": 0.0, "LowLimit": mv.limits.low, "HighLimit": mv.limits.high, "LowLowLimit": mv.limits.lowLow, "HighHighLimit": mv.limits.highHigh };
-            Object.entries(mvNodes).forEach(([s, v]) => yaml += `  - nodeId: "${mv.name}:${s}"\n    nodeClass: "Variable"\n    dataType: "Double"\n    initialValue: ${v || 0}\n`);
-            yaml += `  - nodeId: "${mv.name}:Mode"\n    nodeClass: "Variable"\n    dataType: "Int32"\n    initialValue: 0\n    comment: "Generic MPC Mode: 0=Operator, 1=Auto, 2=Cascade, 3=RemoteCascade (DCS adapter translates native modes)"\n`;
-            yaml += `  - nodeId: "${mv.name}:ModeTarget"\n    nodeClass: "Variable"\n    dataType: "Int32"\n    initialValue: 0\n    comment: "Generic MPC ModeTarget: Operator requested mode (DCS adapter translates)"\n`;
-            // Add optional Target node if MV has economic target
-            if (mv.target !== undefined && mv.targetWeight && mv.targetWeight > 0) {
-                yaml += `  - nodeId: "${mv.name}:Target"\n    nodeClass: "Variable"\n    dataType: "Double"\n    initialValue: ${mv.target}\n    comment: "Economic optimization target (RTO → MV Target → DMC tracks it)"\n`;
-            }
-            ["Weight", "LastMove", "SteadyState"].forEach(s => yaml += `  - nodeId: "${mv.name}:${s}"\n    nodeClass: "Variable"\n    dataType: "Double"\n    initialValue: 0.0\n`);
-            yaml += `  - nodeId: "${mv.name}:FuturePlan"\n    nodeClass: "Variable"\n    dataType: "DoubleArray"\n    initialValue: [${planArray.join(',')}]\n\n`;
-        });
-
-        // DV Nodes
-        model.dvs.forEach((dv) => {
-            yaml += `  # DV: ${dv.name}\n  - nodeId: "${dv.name}"\n    nodeClass: "Object"\n${getDescLine(dv.desc)}`;
-            const dvNodes = { "PV": 0.0, "LowLimit": dv.limits.low, "HighLimit": dv.limits.high };
-            Object.entries(dvNodes).forEach(([s, v]) => yaml += `  - nodeId: "${dv.name}:${s}"\n    nodeClass: "Variable"\n    dataType: "Double"\n    initialValue: ${v || 0}\n`);
-            yaml += `  - nodeId: "${dv.name}:SteadyState"\n    nodeClass: "Variable"\n    dataType: "Double"\n    initialValue: 0.0\n\n`;
-        });
-
-        return yaml;
-    };
-
-    // --- GENERATOR: JSON EXPORT ---
-    const generateJson = () => {
-        // Ensure name matches the YAML system node (sanitized)
-        const cleanName = model.meta.name.replace(/[^a-zA-Z0-9_]/g, "");
-        
-        const exportModel = {
-            metadata: { 
-                name: cleanName || model.meta.name, // Use sanitized name for controller consistency
-                description: model.meta.desc, 
-                version: "1.2",
-                model_type: model.mode
-            },
-            tuning: {
-                prediction_horizon: Math.ceil((model.tuning.tssMin * 60) / model.tuning.sampleTime),
-                control_horizon: model.tuning.controlHorizon,
-                sample_time: model.tuning.sampleTime,
-                solver_tolerance: model.tuning.solverTol,
-                max_iterations: model.tuning.maxIter,
-                terminal_weight_factor: model.tuning.terminalWeightFactor
-            },
-            variables: {
-                cvs: model.cvs.map(cv => ({
-                    name: cv.name, description: cv.desc, units: cv.units, 
-                    weight: cv.weight, alpha: cv.alpha || 0.0,
-                    ece_factor: cv.ece_factor ?? (cv.limits.high - cv.limits.low),
-                    optimization_mode: cv.optimizationMode === "zone"
-                        ? { type: "Zone" }
-                        : cv.optimizationMode === "maximize"
-                        ? { type: "Maximize" }
-                        : cv.optimizationMode === "minimize"
-                        ? { type: "Minimize" }
-                        : { type: "Target", value: cv.limits.target },
-                    limits: { low_low: cv.limits.lowLow, low: cv.limits.low, target: cv.limits.target, high: cv.limits.high, high_high: cv.limits.highHigh },
-                    node_ids: { 
-                        pv: `${cv.name}:PV`, 
-                        target: `${cv.name}:Target`, 
-                        prediction: `${cv.name}:Prediction`,
-                        limits: {
-                            high: `${cv.name}:HighLimit`,
-                            low: `${cv.name}:LowLimit`,
-                            hh: `${cv.name}:HighHighLimit`,
-                            ll: `${cv.name}:LowLowLimit`
-                        }
-                    }
-                })),
-                mvs: model.mvs.map(mv => ({
-                    name: mv.name, description: mv.desc, units: mv.units, 
-                    weight_r: mv.weight, max_move: mv.maxMove,
-                    optimization_mode: mv.mvOptimizationMode === "maximize"
-                        ? { type: "Maximize" }
-                        : mv.mvOptimizationMode === "minimize"
-                        ? { type: "Minimize" }
-                        : { type: "Target", value: (mv.target ?? 0) },
-                    ...(mv.target !== undefined && mv.targetWeight && mv.targetWeight > 0 ? { 
-                        target: mv.target, 
-                        target_weight: mv.targetWeight 
-                    } : {}),
-                    limits: { low_low: mv.limits.lowLow, low: mv.limits.low, high: mv.limits.high, high_high: mv.limits.highHigh },
-                    node_ids: { 
-                        pv: `${mv.name}:PV`,
-                        sp: `${mv.name}:SP`, 
-                        op: `${mv.name}:OP`,
-                        mode: `${mv.name}:Mode`,
-                        mode_target: `${mv.name}:ModeTarget`,
-                        future_plan: `${mv.name}:FuturePlan`,
-                        ...(mv.target !== undefined && mv.targetWeight && mv.targetWeight > 0 ? { 
-                            target: `${mv.name}:Target` 
-                        } : {}),
-                        limits: {
-                            high: `${mv.name}:HighLimit`,
-                            low: `${mv.name}:LowLimit`,
-                            hh: `${mv.name}:HighHighLimit`,
-                            ll: `${mv.name}:LowLowLimit`
-                        }
-                    }
-                })),
-                dvs: model.dvs.map(dv => ({
-                    name: dv.name, description: dv.desc, units: dv.units,
-                    limits: { low: dv.limits.low, high: dv.limits.high },
-                    node_ids: { 
-                        pv: `${dv.name}:PV`,
-                        limits: {
-                            high: `${dv.name}:HighLimit`,
-                            low: `${dv.name}:LowLimit`
-                        }
-                    }
-                }))
-            },
-            physics: model.mode === "parametric" ? {
-                gain: model.physics.gain,
-                tau: model.physics.tau,
-                dead_time: model.physics.deadTime,
-                gain_dv: model.physics.gainDv,
-                tau_dv: model.physics.tauDv,
-                dead_time_dv: model.physics.deadTimeDv
-            } : {
-                gain: [],
-                tau: [],
-                dead_time: [],
-                gain_dv: [],
-                tau_dv: [],
-                dead_time_dv: [],
-                step_coefficients: model.stepResponseData?.stepCoefficients || [],
-                dv_coefficients: model.stepResponseData?.dvCoefficients || []
-            }
-        };
-        return JSON.stringify(exportModel, null, 2);
-    };
 
     // --- GENERATOR: DIRECT DEPLOY ---
     const handleDirectDeploy = async (mode: 'nodes' | 'controller') => {
+        if (!artifacts) {
+            setDeployStatus(`Configuration unavailable: ${artifactError}`);
+            return;
+        }
         if (mode === 'controller' && !selectedSup) {
             setDeployStatus("❌ Please select a target supervisor.");
             return;
@@ -1020,13 +717,13 @@ export const ModelGenerator = () => {
 
         // 2. Payload
         if (mode === 'controller') {
-            const jsonContent = generateJson();
+            const jsonContent = artifacts.json;
             const jsonBlob = new Blob([jsonContent], { type: "application/json" });
             formData.append("model_json", jsonBlob, `${model.meta.name || "Model"}.json`);
         }
         
         if (mode === 'nodes') {
-            const yamlContent = generateYaml();
+            const yamlContent = artifacts.yaml;
             const yamlBlob = new Blob([yamlContent], { type: "text/yaml" });
             formData.append("nodes_yaml", yamlBlob, `${model.meta.name || "Model"}_nodes.yaml`);
         }
@@ -1041,7 +738,10 @@ export const ModelGenerator = () => {
 
             const result = await response.text();
             if (response.ok) {
-                setDeployStatus(`✅ Success: ${result}`);
+                setDeployStatus(mode === 'nodes'
+                    ? 'Node-only deployment confirmed by the server. No controller model was pushed; no controller was started or engaged.'
+                    : 'Controller model push confirmed by the server. No nodes were deployed; no controller was started or engaged.');
+                if (mode === 'nodes') onNodesDeployed();
             } else {
                 setDeployStatus(`❌ Failed: ${result}`);
             }
@@ -1065,7 +765,7 @@ export const ModelGenerator = () => {
                     <select 
                         value={model.mode} 
                         onChange={e => {
-                            setModel({...model, mode: e.target.value as any});
+                            setModel({...model, mode: e.target.value as FullModel['mode']});
                             setActiveTab("Vars"); // Reset to first tab on mode change
                         }}
                         className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1 text-sm font-bold text-slate-300 outline-none hover:border-indigo-500 transition"
@@ -1104,7 +804,7 @@ export const ModelGenerator = () => {
             <div className="flex gap-1 bg-slate-900 p-1 rounded-lg w-fit mb-6">
                 {(() => {
                     // Define tabs based on model type
-                    let tabs: string[] = [];
+                    let tabs: (typeof activeTab)[] = [];
                     if (model.mode === "parametric") {
                         tabs = ["Vars", "Physics", "Tuning", "Export"];
                     } else if (model.mode === "step_response") {
@@ -1112,7 +812,7 @@ export const ModelGenerator = () => {
                     }
                     
                     return tabs.map(t => (
-                        <button key={t} onClick={() => setActiveTab(t as any)} className={`px-4 py-2 text-sm font-bold rounded-md transition ${activeTab === t ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>
+                        <button key={t} onClick={() => setActiveTab(t)} className={`px-4 py-2 text-sm font-bold rounded-md transition ${activeTab === t ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>
                             {t === "StepResponse" ? "Step Response" : t}
                         </button>
                     ));
@@ -1120,6 +820,7 @@ export const ModelGenerator = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto pr-2">
+                {artifactError && <div role="alert" className="mb-4 rounded border border-red-800 bg-red-950/30 p-3 text-sm text-red-200">Configuration unavailable: {artifactError}. Export and deployment are disabled until the mapping is complete and unique.</div>}
                 
                 {/* --- TAB 1: VARIABLES --- */}
                 {activeTab === "Vars" && (
@@ -1131,6 +832,7 @@ export const ModelGenerator = () => {
                                 const newCV = { 
                                     id: Date.now().toString(), 
                                     name: `CV${model.cvs.length+1}`, 
+                                    nodeIds: defaultNodeIds(`CV${model.cvs.length+1}`, 'cv'),
                                     desc: "", 
                                     units: "", 
                                     weight: 1, 
@@ -1230,7 +932,7 @@ export const ModelGenerator = () => {
 
                         {/* MVs TABLE */}
                         <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-800 overflow-x-auto">
-                            <div className="flex justify-between mb-4"><h3 className="font-bold text-indigo-300">Manipulated Variables (MVs)</h3> <button onClick={() => updateMatrixSize(model.cvs, [...model.mvs, { id: Date.now().toString(), name: `MV${model.mvs.length+1}`, desc: "", units: "", weight: 1, maxMove: 5, mvOptimizationMode: "target", limits: {low:0, high:100, lowLow:0, highHigh:100}, target: undefined, targetWeight: 0 }], model.dvs)} className="p-1 bg-indigo-500/20 text-indigo-300 rounded hover:bg-indigo-500/30"><Plus size={16}/></button></div>
+                            <div className="flex justify-between mb-4"><h3 className="font-bold text-indigo-300">Manipulated Variables (MVs)</h3> <button onClick={() => updateMatrixSize(model.cvs, [...model.mvs, { id: Date.now().toString(), name: `MV${model.mvs.length+1}`, nodeIds: defaultNodeIds(`MV${model.mvs.length+1}`, 'mv'), desc: "", units: "", weight: 1, maxMove: 5, mvOptimizationMode: "target", limits: {low:0, high:100, lowLow:0, highHigh:100}, target: undefined, targetWeight: 0 }], model.dvs)} className="p-1 bg-indigo-500/20 text-indigo-300 rounded hover:bg-indigo-500/30"><Plus size={16}/></button></div>
                             <div className="mb-4">
                                 <button
                                     type="button"
@@ -1312,7 +1014,7 @@ export const ModelGenerator = () => {
                          <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-800 overflow-x-auto">
                             <div className="flex justify-between mb-4">
                                 <h3 className="font-bold text-indigo-300">Disturbance Variables (DVs)</h3> 
-                                <button onClick={() => updateMatrixSize(model.cvs, model.mvs, [...model.dvs, { id: Date.now().toString(), name: `DV${model.dvs.length+1}`, desc: "", units: "", weight: 0, limits: {low:0, high:100, lowLow:0, highHigh:100} }])} className="p-1 bg-indigo-500/20 text-indigo-300 rounded hover:bg-indigo-500/30"><Plus size={16}/></button>
+                                <button onClick={() => updateMatrixSize(model.cvs, model.mvs, [...model.dvs, { id: Date.now().toString(), name: `DV${model.dvs.length+1}`, nodeIds: defaultNodeIds(`DV${model.dvs.length+1}`, 'dv'), desc: "", units: "", weight: 0, limits: {low:0, high:100, lowLow:0, highHigh:100} }])} className="p-1 bg-indigo-500/20 text-indigo-300 rounded hover:bg-indigo-500/30"><Plus size={16}/></button>
                             </div>
                             <div className="mb-4">
                                 <button
@@ -1365,6 +1067,38 @@ export const ModelGenerator = () => {
                                 </tbody>
                             </table>
                         </div>
+                        <details className="rounded-xl border border-slate-700 bg-slate-900/50 p-4">
+                            <summary className="cursor-pointer font-bold text-indigo-300">Node mapping — review / edit exact OPC IDs</summary>
+                            <p className="my-3 text-xs text-slate-400">New variables receive conventional defaults. Imported mappings are never regenerated when labels change. Blank required IDs and collisions block export. Optional applied_sp is measured applied-SP feedback; absent feedback remains SP-register-only. OP is a separate PID diagnostic. Clearing an optional ID removes that mapping.</p>
+                            {(['cvs', 'mvs', 'dvs'] as const).map(group => model[group].map((variable, index) => {
+                                const required = group === 'cvs' ? ['pv', 'target', 'prediction'] : group === 'mvs' ? ['pv', 'sp', 'op', 'mode', 'mode_target', 'future_plan'] : ['pv'];
+                                const optional = group === 'mvs' ? ['applied_sp', 'target'] : [];
+                                const fields = [...new Set([...required, ...optional, ...Object.keys(variable.nodeIds).filter(key => key !== 'limits')])];
+                                const limitFields = [...new Set(['low', 'high', 'll', 'hh', ...Object.keys(variable.nodeIds.limits ?? {})])];
+                                const editMapping = (key: string, value: string, isLimit: boolean) => {
+                                    const nodeIds: VarConfig['nodeIds'] & { limits: Record<string, string> } = { ...variable.nodeIds, limits: { ...variable.nodeIds.limits } };
+                                    if (isLimit) {
+                                        if (!value && key !== 'low' && key !== 'high') delete nodeIds.limits[key];
+                                        else nodeIds.limits[key] = value;
+                                    } else if (!value && !required.includes(key)) delete nodeIds[key];
+                                    else nodeIds[key] = value;
+                                    setModel({ ...model, [group]: model[group].map((entry, i) => i === index ? { ...entry, nodeIds } : entry) });
+                                };
+                                return <fieldset key={`${group}:${variable.id}`} className="mb-4 border-t border-slate-800 pt-3">
+                                    <legend className="text-sm font-semibold">{group.slice(0, -1).toUpperCase()}: {variable.name}</legend>
+                                    <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                        {[...fields.map(key => ({ key, isLimit: false })), ...limitFields.map(key => ({ key, isLimit: true }))].map(({ key, isLimit }) => {
+                                            const value = isLimit ? variable.nodeIds.limits?.[key] : variable.nodeIds[key];
+                                            const needed = isLimit ? key === 'low' || key === 'high' : required.includes(key);
+                                            return <label key={`${isLimit}:${key}`} className="flex items-center gap-2 text-xs">
+                                                <span className="w-36 shrink-0">{isLimit ? 'limits.' : ''}{key}{needed ? ' (required)' : ' (optional)'}</span>
+                                                <input aria-label={`${variable.name} ${isLimit ? 'limits.' : ''}${key} node ID`} value={typeof value === 'string' ? value : ''} onChange={event => editMapping(key, event.target.value, isLimit)} className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-950 p-1 font-mono" />
+                                            </label>;
+                                        })}
+                                    </div>
+                                </fieldset>;
+                            }))}
+                        </details>
                     </div>
                 )}
 
@@ -1582,10 +1316,10 @@ export const ModelGenerator = () => {
                 {activeTab === "Tuning" && (
                      <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800 max-w-2xl">
                         <div className="grid grid-cols-2 gap-6 mb-6">
-                            <div><label className="block text-xs text-slate-500 font-bold uppercase mb-1">Sample Time (sec)</label><input type="number" value={model.tuning.sampleTime} onChange={e => setModel({...model, tuning: {...model.tuning, sampleTime: parseFloat(e.target.value)}})} className={numInputClass}/></div>
-                            <div><label className="block text-xs text-slate-500 font-bold uppercase mb-1">Steady State Time (min)</label><input type="number" value={model.tuning.tssMin} onChange={e => setModel({...model, tuning: {...model.tuning, tssMin: parseFloat(e.target.value)}})} className={numInputClass}/></div>
+                            <div><label className="block text-xs text-slate-500 font-bold uppercase mb-1">Sample Time (sec)</label><input type="number" value={model.tuning.sampleTime} onChange={e => setModel({...model, tuning: {...model.tuning, predictionHorizon: undefined, sampleTime: parseFloat(e.target.value)}})} className={numInputClass}/></div>
+                            <div><label className="block text-xs text-slate-500 font-bold uppercase mb-1">Steady State Time (min)</label><input type="number" value={model.tuning.tssMin} onChange={e => setModel({...model, tuning: {...model.tuning, predictionHorizon: undefined, tssMin: parseFloat(e.target.value)}})} className={numInputClass}/></div>
                              <div><label className="block text-xs text-slate-500 font-bold uppercase mb-1">Control Horizon (Moves)</label><input type="number" value={model.tuning.controlHorizon} onChange={e => setModel({...model, tuning: {...model.tuning, controlHorizon: parseFloat(e.target.value)}})} className={numInputClass}/></div>
-                            <div><div className="p-3 bg-indigo-500/10 rounded-lg border border-indigo-500/20 mt-4"><span className="text-indigo-300 text-xs font-bold block">Calculated Prediction Horizon</span><span className="text-2xl font-bold text-white">{Math.ceil((model.tuning.tssMin * 60) / model.tuning.sampleTime)} <span className="text-sm text-slate-500">steps</span></span></div></div>
+                            <div><div className="p-3 bg-indigo-500/10 rounded-lg border border-indigo-500/20 mt-4"><span className="text-indigo-300 text-xs font-bold block">Prediction Horizon (imported or derived from timing)</span><span className="text-2xl font-bold text-white">{model.tuning.predictionHorizon ?? Math.ceil((model.tuning.tssMin * 60) / model.tuning.sampleTime)} <span className="text-sm text-slate-500">steps</span></span></div></div>
                         </div>
                         <h3 className="font-bold text-indigo-300 mb-4 border-b border-slate-800 pb-2">Optimization Solver</h3>
                         <div className="grid grid-cols-2 gap-6">
@@ -1649,7 +1383,7 @@ export const ModelGenerator = () => {
                              <div className="grid grid-cols-2 gap-4">
                                 <button 
                                     onClick={() => handleDirectDeploy('nodes')}
-                                    disabled={isDeploying || !selectedOpc}
+                                    disabled={isDeploying || !selectedOpc || !artifacts}
                                     className="py-3 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-700 disabled:text-slate-500 text-slate-100 font-bold rounded shadow-lg transition-all flex flex-col items-center justify-center gap-1 text-xs"
                                 >
                                     {isDeploying && deployStatus.includes('Nodes') ? (
@@ -1662,7 +1396,7 @@ export const ModelGenerator = () => {
 
                                 <button 
                                     onClick={() => handleDirectDeploy('controller')}
-                                    disabled={isDeploying || !selectedSup}
+                                    disabled={isDeploying || !selectedSup || !artifacts}
                                     className="py-3 bg-indigo-700 hover:bg-indigo-600 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold rounded shadow-lg transition-all flex flex-col items-center justify-center gap-1 text-xs"
                                 >
                                     {isDeploying && deployStatus.includes('Controller') ? (
@@ -1684,11 +1418,11 @@ export const ModelGenerator = () => {
                         <div className="grid grid-cols-2 gap-6 mb-8">
                             <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800 text-center">
                                 <h3 className="font-bold text-white text-lg mb-2">Save Configuration</h3>
-                                <button onClick={() => downloadFile(`${model.meta.name || "Model"}.json`, generateJson(), "application/json")} className="px-6 py-3 bg-indigo-700 hover:bg-indigo-600 text-white font-bold rounded-lg flex items-center gap-2 mx-auto"><Save size={18}/> Download .json</button>
+                                <button disabled={!artifacts} onClick={() => artifacts && downloadFile(`${model.meta.name || "Model"}.json`, artifacts.json, "application/json")} className="px-6 py-3 bg-indigo-700 hover:bg-indigo-600 disabled:opacity-40 text-white font-bold rounded-lg flex items-center gap-2 mx-auto"><Save size={18}/> Download .json</button>
                             </div>
                             <div className="bg-slate-900/50 p-6 rounded-xl border border-slate-800 text-center">
                                 <h3 className="font-bold text-white text-lg mb-2">Export OPC Nodes</h3>
-                                <button onClick={() => downloadFile(`${model.meta.name || "Model"}_nodes.yaml`, generateYaml(), "text/yaml")} className="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-slate-100 font-bold rounded-lg flex items-center gap-2 mx-auto"><Download size={18}/> Download .yaml</button>
+                                <button disabled={!artifacts} onClick={() => artifacts && downloadFile(`${model.meta.name || "Model"}_nodes.yaml`, artifacts.yaml, "text/yaml")} className="px-6 py-3 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-100 font-bold rounded-lg flex items-center gap-2 mx-auto"><Download size={18}/> Download .yaml</button>
                             </div>
                         </div>
                     </div>
@@ -1696,10 +1430,7 @@ export const ModelGenerator = () => {
 
                 {activeTab === "StepResponse" && (
                     <StepResponseTool 
-                        cvNames={model.cvs.map(cv => cv.name)}
-                        mvNames={model.mvs.map(mv => mv.name)}
-                        dvNames={model.dvs.map(dv => dv.name)}
-                        sampleTime={model.tuning.sampleTime}
+                        modelBinding={artifacts?.binding ?? null}
                         tssMin={model.tuning.tssMin}
                     />
                 )}
@@ -1984,7 +1715,7 @@ export const ModelGenerator = () => {
                             ) : (
                                 <div className="space-y-4">
                                     {controllers.map(controller => {
-                                        const isRunning = typeof controller.state === 'object' && controller.state.Running !== undefined;
+                                        const isRunning = controller.state !== null && typeof controller.state === 'object' && 'Running' in controller.state && controller.state.Running !== undefined;
                                         return (
                                             <div key={controller.id} className="bg-slate-800 rounded-lg border-2 border-slate-700 overflow-hidden">
                                                 <div className={`px-4 py-3 flex items-center justify-between ${isRunning ? 'bg-emerald-900/30 border-b-2 border-emerald-700/50' : 'border-b border-slate-700'}`}>

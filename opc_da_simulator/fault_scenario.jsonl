@@ -1,0 +1,17 @@
+{"op":"init","timestamp_ms":1767225600000,"items":[{"id":"Example:PV","value":40.5,"writable":false},{"id":"Example:Command","value":12,"writable":true}]}
+{"op":"read","items":["Example:PV","Example:Command"]}
+{"op":"update","timestamp_ms":1767225660000,"items":[{"id":"Example:PV","value":41.25}]}
+{"op":"write","timestamp_ms":1767225660000,"items":[{"id":"Example:Command","value":13.5}]}
+{"op":"read","items":["Example:PV","Example:Command"]}
+{"op":"write","timestamp_ms":1767225660000,"items":[{"id":"Example:PV","value":0}]}
+{"op":"fault","kind":"bad_quality","enabled":true,"items":["Example:PV"]}
+{"op":"read","items":["Example:PV"]}
+{"op":"fault","kind":"bad_quality","enabled":false,"items":["Example:PV"]}
+{"op":"fault","kind":"write_denied","enabled":true,"items":["Example:Command"]}
+{"op":"write","timestamp_ms":1767225720000,"items":[{"id":"Example:Command","value":14}]}
+{"op":"fault","kind":"write_denied","enabled":false,"items":["Example:Command"]}
+{"op":"fault","kind":"disconnect","enabled":true}
+{"op":"read","items":["Example:PV"]}
+{"op":"fault","kind":"disconnect","enabled":false}
+{"op":"read","items":["Example:PV","Example:Command"]}
+{"op":"close"}

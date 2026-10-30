@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>《Robust Model Predictive Control of Cement Mill Circuits》中文導讀 — GuruPrasath 2011</title>
+<style>
+  :root{
+    --paper:#f7f5f0; --card:#ffffff; --ink:#26313b; --muted:#5d6b76;
+    --rule:#e4ded3; --accent:#0f766e; --accent-soft:rgba(15,118,110,.09);
+    --rust:#b45309; --rust-soft:rgba(180,83,9,.08); --code:#f0ece4;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--paper);color:var(--ink);
+    font-family:"PingFang TC","Microsoft JhengHei","Noto Sans TC","Heiti TC",system-ui,sans-serif;
+    line-height:1.75;font-size:16px}
+  .wrap{max-width:1060px;margin:0 auto;padding:0 20px}
+  /* ---------- hero ---------- */
+  header.hero{padding:56px 0 28px;border-bottom:1px solid var(--rule)}
+  .eyebrow{font-size:12px;letter-spacing:.22em;color:var(--accent);font-weight:600;text-transform:uppercase}
+  h1{font-family:"Noto Serif TC","Songti TC","PMingLiU",serif;font-size:clamp(26px,4vw,40px);
+     line-height:1.3;margin:10px 0 6px;font-weight:700}
+  .subtitle{color:var(--muted);font-size:17px;margin:0 0 18px}
+  .meta{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:14px;color:var(--muted);margin-bottom:14px}
+  .meta b{color:var(--ink);font-weight:600}
+  .srclink{display:inline-block;margin-top:6px;font-size:14px;color:var(--accent);
+    text-decoration:none;border-bottom:1px solid var(--accent);word-break:break-all}
+  .srclink:hover{background:var(--accent-soft)}
+  .notice{margin-top:18px;background:var(--accent-soft);border-left:3px solid var(--accent);
+    padding:10px 14px;font-size:13.5px;color:#0c4f4a;border-radius:0 6px 6px 0}
+  /* ---------- toc ---------- */
+  nav.toc{position:sticky;top:0;z-index:20;background:var(--paper);border-bottom:1px solid var(--rule);
+    padding:10px 0;overflow-x:auto;white-space:nowrap}
+  nav.toc a{display:inline-block;font-size:13.5px;color:var(--muted);text-decoration:none;
+    padding:5px 12px;margin-right:4px;border:1px solid var(--rule);border-radius:999px;background:var(--card)}
+  nav.toc a:hover{color:var(--accent);border-color:var(--accent)}
+  /* ---------- sections ---------- */
+  section{padding:44px 0 8px}
+  h2{font-family:"Noto Serif TC","Songti TC",serif;font-size:26px;margin:0 0 4px;font-weight:700}
+  h2 .no{color:var(--accent);font-size:15px;vertical-align:middle;margin-right:8px;letter-spacing:.1em}
+  h3{font-size:18px;margin:30px 0 8px;font-weight:700}
+  .lede{color:var(--muted);margin:0 0 22px;max-width:62em}
+  p{margin:10px 0;max-width:68em}
+  ul,ol{margin:8px 0;padding-left:1.5em;max-width:66em}
+  li{margin:5px 0}
+  .card{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:20px 22px;margin:16px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:820px){.grid2,.grid3{grid-template-columns:1fr}}
+  .mini{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:14px 16px}
+  .mini h4{margin:0 0 6px;font-size:14.5px;color:var(--accent)}
+  .mini p{font-size:13.5px;color:var(--muted);margin:0}
+  /* ---------- tables ---------- */
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px;background:var(--card)}
+  th,td{border:1px solid var(--rule);padding:8px 12px;text-align:left;vertical-align:top}
+  th{background:#efeae0;font-weight:600;font-size:13.5px}
+  td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+  caption{caption-side:bottom;font-size:12.5px;color:var(--muted);text-align:left;padding-top:6px}
+  /* ---------- math ---------- */
+  .eq{background:var(--card);border:1px solid var(--rule);border-radius:10px;
+    padding:16px 20px;margin:14px 0;overflow-x:auto;font-size:15.5px}
+  .eq .tag{float:right;color:var(--muted);font-size:13px}
+  .eq .f{font-family:"STIX Two Math","Times New Roman",serif;font-style:italic;white-space:nowrap}
+  var{font-family:"STIX Two Math","Times New Roman",serif;font-style:italic}
+  sub,sup{font-size:.72em}
+  /* ---------- callouts ---------- */
+  .warn{background:var(--rust-soft);border-left:3px solid var(--rust);border-radius:0 6px 6px 0;
+    padding:12px 16px;margin:16px 0;font-size:14.5px}
+  .warn b{color:var(--rust)}
+  .note{background:var(--accent-soft);border-left:3px solid var(--accent);border-radius:0 6px 6px 0;
+    padding:12px 16px;margin:16px 0;font-size:14.5px}
+  .page{font-size:12px;color:var(--muted);white-space:nowrap}
+  /* ---------- figures ---------- */
+  figure{margin:18px 0;background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:18px}
+  figcaption{font-size:13px;color:var(--muted);margin-top:10px}
+  .fig-scroll{overflow-x:auto}
+  svg text{font-family:"PingFang TC","Microsoft JhengHei","Noto Sans TC",sans-serif}
+  /* ---------- interactive ---------- */
+  .ctl{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin:14px 0 4px;font-size:14px}
+  .ctl label{font-weight:600}
+  .ctl input[type=range]{width:220px;accent-color:var(--accent)}
+  .ctl output{font-variant-numeric:tabular-nums;color:var(--accent);font-weight:700;min-width:3em}
+  .formula-live{font-size:14px;color:var(--muted);background:var(--code);border-radius:6px;
+    padding:6px 12px;display:inline-block;margin-top:8px}
+  footer{border-top:1px solid var(--rule);margin-top:56px;padding:26px 0 60px;
+    font-size:13px;color:var(--muted)}
+  code{background:var(--code);border-radius:4px;padding:1px 6px;font-size:.92em;
+    font-family:ui-monospace,"Cascadia Mono",Consolas,monospace}
+</style>
+</head>
+<body>
+
+<header class="hero"><div class="wrap">
+  <div class="eyebrow">論文中文導讀 · PhD Thesis Explainer</div>
+  <h1>水泥磨迴路的穩健模型預測控制<br>
+    <span style="font-size:.62em;color:var(--muted)">Robust Model Predictive Control of Cement Mill Circuits</span></h1>
+  <p class="subtitle">以有限脈衝響應（FIR）模型、移動視窗估測與「軟約束」MPC，解決水泥球磨迴路的模型失配與慢速品質量測問題。</p>
+  <div class="meta">
+    <span><b>作者</b> M. GuruPrasath</span>
+    <span><b>學位</b> 博士（化學工程），2011 年 8 月</span>
+    <span><b>學校</b> 印度 National Institute of Technology, Tiruchirappalli</span>
+    <span><b>指導</b> M. Chidambaram；共同指導 John Bagterp Jørgensen（DTU）</span>
+    <span><b>產業合作</b> FLSmidth（CEMulator 模擬器）、UltraTech Cement（實廠測試）</span>
+  </div>
+  <a class="srclink" href="https://www2.imm.dtu.dk/~jbjo/PhD_Thesis_2011_GuruPrasath.pdf">原始論文 PDF（DTU 託管，212 頁）</a>
+  <div class="notice">
+    <b>閱讀須知：</b>本導讀所有數字、方程式與結論均取自上述 PDF。章節引用格式為「紙本頁碼 p.xx」，
+    正文的 <b>PDF 實體頁 ≈ 紙本頁碼 + 17</b>。原 PDF 的公式經文字抽取後排版破碎，
+    本頁方程式已依上下文重建清理，正式引用前請核對原文。
+  </div>
+</div></header>
+
+<nav class="toc" aria-label="目錄"><div class="wrap">
+  <a href="#overview">一分鐘概覽</a><a href="#process">製程與控制問題</a><a href="#method">三個方法支柱</a>
+  <a href="#softlab">軟約束互動圖</a><a href="#experiments">實驗設計</a><a href="#results">主要結果</a>
+  <a href="#delay">慢速品質量測</a><a href="#limits">批判性評估</a><a href="#read">論文導讀地圖</a><a href="#glossary">術語表</a>
+</div></nav>
+
+<main class="wrap">
+
+<!-- ================= 1. 概覽 ================= -->
+<section id="overview">
+  <h2><span class="no">01</span>一分鐘概覽</h2>
+  <p class="lede">這本論文回答一個工業控制問題：<b>當水泥磨的線性模型注定不準、產品品質每小時才量測一次時，MPC 要怎麼設計才不會「越控越亂」？</b></p>
+  <div class="grid2">
+    <div class="mini"><h4>問題</h4><p>閉路球磨迴路具非線性與強交互作用，進料（熟料、石膏、粉煤灰）成分與易磨性波動大，由簡單測試建立的模型存在大量不確定性，傳統控制效能差（摘要，PDF p.5）。</p></div>
+    <div class="mini"><h4>方法</h4><p>以 FIR 脈衝響應模型建立帶輸入／輸入速率限制的 ℓ₂ 預測控制器，轉成凸二次規劃（QP）用內點法求解；再加上設定點周圍的「軟輸出限制」（死區）提升對模型失配的穩健性（Ch.3）。</p></div>
+    <div class="mini"><h4>驗證平台</h4><p>MATLAB SISO／2×2 MIMO 模擬 → FLSmidth 的 ECS/CEMulator 高保真水泥廠模擬器 → UltraTech Cement Arakkonam 廠線上實測（與既有模糊邏輯控制器比較）。</p></div>
+    <div class="mini"><h4>主要結果（作者宣稱）</h4><p>CEMulator 上操縱量變動較傳統 MPC 減少約 50%（正文可查數據為進料標準差 −26%、分離器轉速 −96%）；實廠細度標準差改善約 23%。細節與保留意見見第 6、8 節。</p></div>
+  </div>
+  <div class="note">作者還提出一條處理「小時級品質取樣」的經驗法則：把控制器模型中<b>細度相關路徑</b>的延遲額外加上約半個品質取樣週期（每小時取樣 → +30 min），即可沿用原本調好的控制器權重（Ch.7）。</div>
+</section>
+
+<!-- ================= 2. 製程 ================= -->
+<section id="process">
+  <h2><span class="no">02</span>製程與控制問題（Ch.5）</h2>
+  <p class="lede">水泥成品粉磨是「球磨機＋動態分級機」組成的閉路迴路。研磨後的物料由斗式提升機送往分級機：細粉成為成品，粗粒被拒料回磨機再磨。典型吞吐量約 120–150 t/h（Ch.5，紙本 pp.110–116／PDF pp.127–133）。</p>
+
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 1000 340" width="1000" role="img" aria-labelledby="proc-title proc-desc">
+      <title id="proc-title">水泥磨閉路流程與控制變數</title>
+      <desc id="proc-desc">新鮮進料進入球磨機，經提升機到分級機，細粉為成品、粗料回磨；標示兩個操縱量與兩個受控量。</desc>
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#5d6b76"/>
+        </marker>
+      </defs>
+      <!-- feed -->
+      <rect x="24" y="130" width="150" height="64" rx="6" fill="#f0ece4" stroke="#5d6b76"/>
+      <text x="99" y="156" text-anchor="middle" font-size="14" font-weight="600">新鮮進料</text>
+      <text x="99" y="176" text-anchor="middle" font-size="12" fill="#5d6b76">熟料＋石膏＋粉煤灰</text>
+      <!-- mill -->
+      <rect x="232" y="116" width="240" height="92" rx="6" fill="#ffffff" stroke="#26313b" stroke-width="1.4"/>
+      <text x="352" y="146" text-anchor="middle" font-size="15" font-weight="700">球磨機（兩室）</text>
+      <text x="352" y="166" text-anchor="middle" font-size="12" fill="#5d6b76">粗磨室（大鋼球）→ 細磨室（小鋼球）</text>
+      <text x="352" y="186" text-anchor="middle" font-size="12" fill="#5d6b76">非線性、易磨性隨料源變化</text>
+      <!-- elevator -->
+      <rect x="540" y="130" width="150" height="64" rx="6" fill="#ffffff" stroke="#26313b" stroke-width="1.4"/>
+      <text x="615" y="156" text-anchor="middle" font-size="14" font-weight="600">斗式提升機</text>
+      <text x="615" y="176" text-anchor="middle" font-size="12" fill="#5d6b76">功率＝磨機負荷指標</text>
+      <!-- separator -->
+      <rect x="758" y="116" width="218" height="92" rx="6" fill="#ffffff" stroke="#26313b" stroke-width="1.4"/>
+      <text x="867" y="146" text-anchor="middle" font-size="15" font-weight="700">空氣分級機</text>
+      <text x="867" y="166" text-anchor="middle" font-size="12" fill="#5d6b76">細粉 → 成品倉</text>
+      <text x="867" y="186" text-anchor="middle" font-size="12" fill="#5d6b76">粗粒 → 回磨再磨</text>
+      <!-- main flow arrows -->
+      <line x1="174" y1="162" x2="232" y2="162" stroke="#5d6b76" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="472" y1="162" x2="540" y2="162" stroke="#5d6b76" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="690" y1="162" x2="758" y2="162" stroke="#5d6b76" stroke-width="1.6" marker-end="url(#ar)"/>
+      <line x1="940" y1="116" x2="940" y2="52" stroke="#5d6b76" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="940" y="36" text-anchor="end" font-size="13" font-weight="600">成品（細度 Fineness）</text>
+      <!-- recycle -->
+      <path d="M 820 208 L 820 268 L 352 268 L 352 208" fill="none" stroke="#5d6b76" stroke-width="1.6" stroke-dasharray="6 4" marker-end="url(#ar)"/>
+      <text x="586" y="260" text-anchor="middle" font-size="12" fill="#5d6b76">拒料回流（循環負荷）</text>
+      <!-- MV/CV chips -->
+      <rect x="36" y="226" width="126" height="40" rx="4" fill="rgba(15,118,110,.09)" stroke="#0f766e"/>
+      <text x="99" y="243" text-anchor="middle" font-size="12" font-weight="700" fill="#0f766e">MV₁ 進料率</text>
+      <text x="99" y="259" text-anchor="middle" font-size="11" fill="#0c4f4a">Feed（t/h）</text>
+      <line x1="99" y1="226" x2="99" y2="194" stroke="#0f766e" stroke-width="1.4" stroke-dasharray="4 3"/>
+      <rect x="746" y="226" width="140" height="40" rx="4" fill="rgba(15,118,110,.09)" stroke="#0f766e"/>
+      <text x="816" y="243" text-anchor="middle" font-size="12" font-weight="700" fill="#0f766e">MV₂ 分離器轉速</text>
+      <text x="816" y="259" text-anchor="middle" font-size="11" fill="#0c4f4a">Separator speed（%）</text>
+      <line x1="816" y1="226" x2="816" y2="208" stroke="#0f766e" stroke-width="1.4" stroke-dasharray="4 3"/>
+      <rect x="540" y="52" width="150" height="40" rx="4" fill="rgba(180,83,9,.08)" stroke="#b45309"/>
+      <text x="615" y="69" text-anchor="middle" font-size="12" font-weight="700" fill="#b45309">CV₁ 提升機負荷</text>
+      <text x="615" y="85" text-anchor="middle" font-size="11" fill="#7c3f0e">Elevator load（連續量測）</text>
+      <line x1="615" y1="130" x2="615" y2="92" stroke="#b45309" stroke-width="1.4" stroke-dasharray="4 3"/>
+      <rect x="232" y="52" width="220" height="40" rx="4" fill="rgba(180,83,9,.08)" stroke="#b45309"/>
+      <text x="342" y="69" text-anchor="middle" font-size="12" font-weight="700" fill="#b45309">CV₂ 產品細度 Fineness</text>
+      <text x="342" y="85" text-anchor="middle" font-size="11" fill="#7c3f0e">Blaine 比表面積（每小時取樣化驗）</text>
+    </svg>
+    </div>
+    <figcaption>圖 1：閉路粉磨流程與 2×2 控制架構（依 Ch.5 §5.2–5.3 重繪）。注意細度是慢速化驗值，這是 Ch.7 的問題根源。</figcaption>
+  </figure>
+
+  <h3>控制結構：2×2 MIMO，不是兩個獨立迴路</h3>
+  <p>論文的控制器是完整的 2×2 多變數架構——兩個操縱量一起影響兩個受控量，存在不可忽略的交互作用（耦合）。「進料管負荷、分離器管細度」只是工程直覺，不是論文的控制結構。</p>
+  <table>
+    <tr><th>類別</th><th>變數</th><th>說明</th></tr>
+    <tr><td>操縱量 MV</td><td>Feed rate（t/h）、Separator speed（%）</td><td>由控制器計算並下達</td></tr>
+    <tr><td>受控量 CV</td><td>Elevator load、Fineness（Blaine, m²/kg）</td><td>負荷反映磨機狀態；細度代表產品品質</td></tr>
+    <tr><td>主要擾動</td><td>熟料易磨性（grindability）、進料成分不均</td><td>CEMulator 實驗中設定 nominal 33，測試 28／36（Ch.6 §6.2）</td></tr>
+  </table>
+  <div class="warn"><b>原文勘誤提醒：</b>論文摘要（PDF p.6）與 Ch.8 各有一處把 CV／MV 寫反（將 Elevator Load、Fineness 稱為 input vectors）。依 Ch.4 §4.6、Ch.5 式(5.1) 與 Ch.6 實作，正確方向為 <b>MV＝Feed、Separator speed；CV＝Elevator load、Fineness</b>。</div>
+
+  <h3>模型：逐步測試辨識的 SOPDT（含零點）轉移函數</h3>
+  <p>作者在 ECS/CEMulator 模擬器上做個別步階測試，擬合出 2×2 轉移函數矩陣（式 5.1，紙本 p.122／PDF p.139；時間常數與延遲單位皆為<b>分鐘</b>）：</p>
+  <div class="eq"><span class="tag">式 (5.1)</span>
+    <span class="f">G(s) = ⎡⎢⎣</span>
+    <span class="f">0.62·e<sup>−5s</sup>/[(45s+1)(8s+1)]</span>&nbsp;&nbsp;
+    <span class="f">0.29(8s+1)·e<sup>−1.5s</sup>/[(2s+1)(38s+1)]</span>
+    <span class="f">⎤⎥⎦</span><br>
+    <span style="display:inline-block;padding-left:3.2em" class="f">−15·e<sup>−5s</sup>/(60s+1)</span>&nbsp;&nbsp;
+    <span class="f">5·e<sup>−0.1s</sup>/[(14s+1)(s+1)]</span>
+  </div>
+  <p style="font-size:14px;color:var(--muted)">列為 CV（Elevator load、Fineness），行為 MV（Feed、Separator speed）。G₁₂ 含 (8s+1) 零點；G₂₁ 為負增益（進料增加會沖稀細度）。此模型即控制器內部使用的預測模型。</p>
+</section>
+
+<!-- ================= 3. 方法 ================= -->
+<section id="method">
+  <h2><span class="no">03</span>三個方法支柱（Ch.3）</h2>
+  <p class="lede">全論文的數學核心是：用 FIR 模型做預測、用估測器補償未知擾動、用軟輸出限制換取穩健性。三者最後都收斂到同一個形式——凸二次規劃（QP），以內點法求解。</p>
+
+  <h3>3.1 FIR 模型與預測控制器</h3>
+  <p>穩定製程可用有限脈衝響應（FIR）模型表示（式 3.5，紙本 p.69）：輸出是過去 <var>n</var> 個輸入的加權和，權重 <var>H<sub>i</sub></var> 即馬可夫參數，<var>b<sub>k</sub></var> 是估測器提供的偏差項。FIR 的優點：可直接由工廠測試資料估計、只需要安定時間資訊（不需事先知道階次與延遲）、天然適合「缺漏量測」（如小時級化驗值）；代價是僅適用於穩定製程。</p>
+  <div class="eq"><span class="tag">式 (3.5)、(3.6a)</span>
+    <span class="f">z<sub>k</sub> = b<sub>k</sub> + Σ<sub>i=1..n</sub> H<sub>i</sub>·u<sub>k−i</sub></span><br>
+    <span class="f">min φ = ½·Σ‖z<sub>k+1</sub> − r<sub>k+1</sub>‖²<sub>Qz</sub> + ½·Σ‖Δu<sub>k</sub>‖²<sub>S</sub></span>，
+    受限於 <span class="f">u<sub>min</sub> ≤ u<sub>k</sub> ≤ u<sub>max</sub>、Δu<sub>min</sub> ≤ Δu<sub>k</sub> ≤ Δu<sub>max</sub></span>
+  </div>
+  <p style="font-size:14px;color:var(--muted)">預測視界與控制視界取相同長度 <var>N</var>，並刻意取夠長，使視界末端的邊界效應不影響前端解。每個取樣時刻只執行最優序列的第一步（receding horizon），下一步重新最佳化（圖 3.3）。</p>
+
+  <h3>3.2 估測器：簡易偏差估測 vs. 移動視窗估測（MHE）</h3>
+  <p>為了消除穩態誤差，回授環路需要積分作用。論文用了兩種做法，<b>兩者不可混為一談</b>：</p>
+  <table>
+    <tr><th>估測器</th><th>做法</th><th>角色</th></tr>
+    <tr>
+      <td><b>簡易估測器</b>（§3.3.3，式 3.9）</td>
+      <td>把 FIR 模型寫成差分形式，將「模型預測與實際輸出之差」<var>e<sub>k</sub></var> 累加成偏差項 <var>b̂<sub>k</sub> = b̂<sub>k−1</sub> + e<sub>k</sub></var>，等效於假設擾動是「定值輸出擾動」。</td>
+      <td>計算便宜；<b>後續 Soft MPC 與所有水泥磨實驗實際採用者</b>（§3.7 明載：因 MHE 需同時解估測＋控制兩個最佳化，計算量大）。</td>
+    </tr>
+    <tr>
+      <td><b>移動視窗估測 MHE</b>（§3.5，式 3.14）</td>
+      <td>在長度 <var>N<sub>e</sub></var> 的歷史視窗上，把未知擾動序列 <var>d<sub>k</sub></var>（拆成慢變水位 <var>d̄</var>＋快變雜訊 <var>w</var>）當決策變數，正規化擬合歷史量測，可對擾動加幅值／速率限制。</td>
+      <td>理論貢獻與 SISO 模擬驗證（§3.6）；<b>未</b>用於後續 Soft MPC 與工廠實驗。</td>
+    </tr>
+  </table>
+
+  <h3>3.3 軟約束 MPC（全書核心）</h3>
+  <p>傳統 MPC 對「輸出偏離設定點」一律二次懲罰，因此會對量測雜訊與模型誤差過度反應，造成操縱量頻繁抖動。作者的解法：在設定點周圍劃一條<b>軟帶（dead zone）</b>，帶內誤差只給極小懲罰，帶外才用二次＋線性懲罰重罰（式 3.22，紙本 p.91）：</p>
+  <div class="eq"><span class="tag">式 (3.22)</span>
+    <span class="f">min φ = ½·Σ‖z<sub>k+1</sub> − r<sub>k+1</sub>‖²<sub>Qz</sub> + ½·Σ‖Δu<sub>k</sub>‖²<sub>S</sub> + ½·Σ‖η<sub>k</sub>‖²<sub>S</sub> + Σ s′·η<sub>k</sub></span><br>
+    <span class="f">s.t. z<sub>k</sub> = b<sub>k</sub> + Σ H<sub>i</sub>u<sub>k−i</sub>；u、Δu 硬限制；z<sub>k</sub> ≤ z<sub>max,k</sub> + η<sub>k</sub>；z<sub>k</sub> ≥ z<sub>min,k</sub> − η<sub>k</sub>；η<sub>k</sub> ≥ 0</span>
+  </div>
+  <p>鬆弛變數 <var>η</var> 讓輸出「可以」越界，但越界要付出二次＋線性代價；帶內保留一個很小的二次懲罰，以維持穩態無偏移（offset-free）。整個問題仍可整理成標準凸 QP（推導見附錄 A.3，式 A.26–A.37：預測寫成 <span class="f">Z = c + ΓU</span>，Hessian <span class="f">H = Γ′Q<sub>z</sub>Γ + Λ′SΛ</span>），用內點法求解（附錄 D）。</p>
+  <div class="note"><b>軟帶寬度經驗法則（§3.7.2，紙本 pp.93–94）：</b>太寬 → 反應遲鈍甚至穩態偏差；太窄 → 退化成傳統 MPC、失去穩健性。作者建議依量測＋製程雜訊變異數選取（原文示例：雜訊變異數 σ²=2.5 時取軟限 ±2；並建議軟限約取 0.8–0.9 倍雜訊變異數 <var>N</var>——此句原文敘述簡略，引用時建議對照圖 3.30）。</div>
+</section>
+
+<!-- ================= 4. 互動圖 ================= -->
+<section id="softlab">
+  <h2><span class="no">04</span>軟約束在做什麼：互動懲罰曲線</h2>
+  <p class="lede">拉動滑桿改變軟帶半寬 <var>b</var>，觀察「帶內幾乎不管、帶外重拳出擊」的懲罰形狀如何改變。這是圖 3.29 原理的示意重現（非量測數據）。</p>
+  <figure>
+    <div class="ctl">
+      <label for="band">軟帶半寬 b</label>
+      <input id="band" type="range" min="0.10" max="1.20" step="0.05" value="0.60" aria-describedby="bandHelp">
+      <output id="bandOut" for="band">0.60</output>
+      <span id="bandHelp" style="color:var(--muted);font-size:13px">誤差 |e| &lt; b 時只有微小懲罰（權重 0.05）；|e| ≥ b 時額外加上 (|e|−b)²。</span>
+    </div>
+    <div class="fig-scroll">
+    <svg id="lossSvg" viewBox="0 0 800 360" width="800" role="img" aria-labelledby="loss-title loss-desc">
+      <title id="loss-title">傳統二次懲罰與軟約束死區懲罰比較示意圖</title>
+      <desc id="loss-desc">橫軸為設定點誤差，縱軸為懲罰值；軟約束在軟帶內懲罰接近零，帶外二次成長。</desc>
+      <!-- grid -->
+      <g stroke="#e4ded3" stroke-width="1">
+        <line x1="64" y1="290" x2="736" y2="290"/><line x1="64" y1="234" x2="736" y2="234"/>
+        <line x1="64" y1="178" x2="736" y2="178"/><line x1="64" y1="122" x2="736" y2="122"/>
+        <line x1="64" y1="66" x2="736" y2="66"/>
+      </g>
+      <g font-size="11" fill="#5d6b76" text-anchor="end">
+        <text x="56" y="294">0</text><text x="56" y="238">1</text><text x="56" y="182">2</text>
+        <text x="56" y="126">3</text><text x="56" y="70">4</text>
+      </g>
+      <g font-size="11" fill="#5d6b76" text-anchor="middle">
+        <text x="64" y="308">−2</text><text x="232" y="308">−1</text><text x="400" y="308">0</text>
+        <text x="568" y="308">1</text><text x="736" y="308">2</text>
+      </g>
+      <text x="400" y="332" text-anchor="middle" font-size="12" fill="#5d6b76">設定點誤差 e = z − r</text>
+      <text x="20" y="178" font-size="12" fill="#5d6b76" transform="rotate(-90 20 178)" text-anchor="middle">懲罰 ρ(e)</text>
+      <!-- soft band -->
+      <rect id="bandRect" x="299.2" y="66" width="201.6" height="224" fill="rgba(15,118,110,.09)"/>
+      <line id="bandL" x1="299.2" y1="66" x2="299.2" y2="290" stroke="#0f766e" stroke-width="1.2" stroke-dasharray="4 3"/>
+      <line id="bandR" x1="500.8" y1="66" x2="500.8" y2="290" stroke="#0f766e" stroke-width="1.2" stroke-dasharray="4 3"/>
+      <text id="bandTxtL" x="299.2" y="60" text-anchor="middle" font-size="11" fill="#0f766e">−0.60</text>
+      <text id="bandTxtR" x="500.8" y="60" text-anchor="middle" font-size="11" fill="#0f766e">+0.60</text>
+      <text x="400" y="286" text-anchor="middle" font-size="11" fill="#0f766e">死區（軟帶）：懲罰≈0</text>
+      <!-- curves (static fallback = b 0.60；JS 會即時更新) -->
+      <polyline id="convLine" fill="none" stroke="#b45309" stroke-width="2" stroke-linejoin="round"
+        points="64.0,66.0 80.8,87.8 97.6,108.6 114.4,128.2 131.2,146.6 148.0,164.0 164.8,180.2 181.6,195.4 198.4,209.4 215.2,222.2 232.0,234.0 248.8,244.6 265.6,254.2 282.4,262.6 299.2,269.8 316.0,276.0 332.8,281.0 349.6,285.0 366.4,287.8 383.2,289.4 400.0,290.0 416.8,289.4 433.6,287.8 450.4,285.0 467.2,281.0 484.0,276.0 500.8,269.8 517.6,262.6 534.4,254.2 551.2,244.6 568.0,234.0 584.8,222.2 601.6,209.4 618.4,195.4 635.2,180.2 652.0,164.0 668.8,146.6 685.6,128.2 702.4,108.6 719.2,87.8 736.0,66.0"/>
+      <polyline id="softLine" fill="none" stroke="#0f766e" stroke-width="2.4" stroke-linejoin="round"
+        points="64.0,169.0 80.8,185.3 97.6,200.3 114.4,214.1 131.2,226.8 148.0,238.3 164.8,248.7 181.6,257.8 198.4,265.8 215.2,272.6 232.0,278.2 248.8,282.7 265.6,286.0 282.4,288.1 299.2,289.0 316.0,289.3 332.8,289.6 349.6,289.7 366.4,289.9 383.2,290.0 400.0,290.0 416.8,290.0 433.6,289.9 450.4,289.7 467.2,289.6 484.0,289.3 500.8,289.0 517.6,288.1 534.4,286.0 551.2,282.7 568.0,278.2 584.8,272.6 601.6,265.8 618.4,257.8 635.2,248.7 652.0,238.3 668.8,226.8 685.6,214.1 702.4,200.3 719.2,185.3 736.0,169.0"/>
+      <!-- legend -->
+      <line x1="500" y1="344" x2="530" y2="344" stroke="#b45309" stroke-width="2"/>
+      <text x="536" y="348" font-size="12" fill="#26313b">傳統 MPC：ρ = e²</text>
+      <line x1="640" y1="344" x2="670" y2="344" stroke="#0f766e" stroke-width="2.4"/>
+      <text x="676" y="348" font-size="12" fill="#26313b">軟約束 MPC</text>
+    </svg>
+    </div>
+    <div class="formula-live">目前懲罰（示意）：<span id="formulaText">ρ(e) = 0.05·e² ＋ max(0, |e| − 0.60)²</span></div>
+    <figcaption>圖 2：依 §3.7.1 圖 3.29 原理重繪。論文實際實作是式 (3.22) 的 QP 形式（含線性項 s′η），此圖為概念示意，非實驗數據。</figcaption>
+  </figure>
+</section>
+
+<!-- ================= 5. 實驗設計 ================= -->
+<section id="experiments">
+  <h2><span class="no">05</span>實驗設計：三個層級的驗證</h2>
+  <p class="lede">論文的證據強度依平台遞增，閱讀時應把「SISO 理論驗證、MIMO 模擬、模擬器閉環、真實工廠」四個層級分開。</p>
+  <table>
+    <tr><th>層級</th><th>平台</th><th>系統</th><th>比較對象</th><th>關鍵設定</th><th>出處</th></tr>
+    <tr>
+      <td>理論模擬</td><td>MATLAB</td>
+      <td>SISO：含零點 SOPDT<br><span class="f">G(s)=K(βs+1)e<sup>−τs</sup>/[(τ₁s+1)(τ₂s+1)]</span></td>
+      <td>軟約束 MPC vs 傳統 MPC</td>
+      <td>取樣 Ts=1；輸入限幅 ±1、變化率 ±0.2；FIR 長度 n=40、視界 N=120；過程與量測雜訊變異數 0.01；失配案例：延遲 5→3/7、增益 1→2、時間常數 5→2、零點 2→4.5</td>
+      <td class="page">Ch.4 §4.2–4.5<br>紙本 pp.97–105</td>
+    </tr>
+    <tr>
+      <td>MIMO 模擬</td><td>MATLAB</td>
+      <td>2×2 水泥磨模型（式 4.4–4.5）</td>
+      <td>同上；擾動為熟料易磨性</td>
+      <td>名義案例傳統 MPC 略佳；增益失配下傳統 MPC 持續振盪，軟 MPC 在視界 75% 前穩定</td>
+      <td class="page">Ch.4 §4.6–4.7<br>紙本 pp.106–110</td>
+    </tr>
+    <tr>
+      <td>模擬器閉環</td><td>ECS/CEMulator（FLSmidth 非線性水泥廠模擬器）</td>
+      <td>線性控制器控制非線性虛擬工廠，運行數小時至 16 小時</td>
+      <td>軟 MPC vs 傳統 MPC</td>
+      <td>目標：負荷 30（軟帶 28–32）、細度 3100（軟帶 3000–3200）；MV 初值 Feed 126 t/h、轉速 70%；易磨性 33→36/28；16 小時測試中於 1.35 h 加入熟料硬度擾動、2 h 啟動控制</td>
+      <td class="page">Ch.6 §6.2<br>紙本 pp.124–129</td>
+    </tr>
+    <tr>
+      <td><b>真實工廠</b></td><td>UltraTech Cement, Arakkonam 廠（線上）</td>
+      <td>實際水泥磨迴路</td>
+      <td>軟 MPC vs 既有模糊邏輯控制器（FLC）</td>
+      <td>PLC 每 10 秒記錄；細度實驗室化驗每小時一次；MPC 每分鐘執行</td>
+      <td class="page">Ch.6 §6.3<br>紙本 pp.129–135</td>
+    </tr>
+  </table>
+</section>
+
+<!-- ================= 6. 結果 ================= -->
+<section id="results">
+  <h2><span class="no">06</span>主要結果與數據核對</h2>
+
+  <h3>6.1 模擬器（CEMulator）：MV 標準差</h3>
+  <table>
+    <tr><th>操縱量</th><th>傳統 MPC（SD）</th><th>軟 MPC（SD）</th><th>降幅</th></tr>
+    <tr><td>Feed rate</td><td class="num">4.4258</td><td class="num">3.269</td><td class="num">約 −26%</td></tr>
+    <tr><td>Separator speed</td><td class="num">2.4149</td><td class="num">0.0878</td><td class="num">約 −96%</td></tr>
+    <caption>Ch.6 §6.4 結論段原文數據（紙本 p.135／PDF p.152）。輸出品質兩者相近，軟 MPC 以更小操縱量達成。</caption>
+  </table>
+  <div class="warn"><b>「減少 50%」的口徑不明：</b>摘要（PDF p.6）與 Ch.8 宣稱操縱量變動減少約 50%，但正文兩項 MV 的標準差降幅分別約 26% 與 96%，論文未說明如何彙總成 50%（圖 6.3 的 Feed 範圍約由 110–140 縮至 125–138 t/h，目測約 −57%，又是另一種量法）。引用時建議直接使用上表可核對的數字。</div>
+
+  <h3>6.2 真實工廠：細度改善</h3>
+  <ul>
+    <li>軟 MPC 取代既有模糊邏輯控制器在線運行，<b>細度標準差改善約 23%</b>（Ch.6 §6.3、Ch.8 §8.5(4)）。</li>
+    <li>論文未提供兩組控制器的絕對標準差或原始數據，無法獨立重算；屬作者報告值。</li>
+    <li>作者自述圖 6.5 期間 MPC 曾長時間觸及高限位運行（原料品質波動所致），即便如此細度仍更穩定。</li>
+  </ul>
+
+  <h3>6.3 穩健性邊界（SISO 模擬觀察，Ch.3 §3.8）</h3>
+  <table>
+    <tr><th>參數失配（相對名義模型）</th><th>模擬觀察到的容忍度</th></tr>
+    <tr><td>純延遲（time delay）</td><td class="num">約 ±40% 以內</td></tr>
+    <tr><td>增益（gain）</td><td class="num">約 ±50% 以內</td></tr>
+    <tr><td>零點（zero）</td><td class="num">約 2 倍以內</td></tr>
+    <caption>紙本 p.94。超過後出現持續振盪。注意：這是特定 SISO 案例的模擬觀察，不是通用保證（詳見第 8 節）。</caption>
+  </table>
+</section>
+
+<!-- ================= 7. 慢速量測 ================= -->
+<section id="delay">
+  <h2><span class="no">07</span>亮點章節：慢速品質量測的延遲補償（Ch.7）</h2>
+  <p class="lede">細度每小時才由自動取樣器取樣、化驗後輸入系統，而提升機負荷是連續量測。直接用「1 分鐘級資料」建立的模型控制「每小時更新」的細度，效能明顯退化。本章全部為 CEMulator 模擬結果，非實廠測試。</p>
+  <div class="grid2">
+    <div class="card">
+      <h3 style="margin-top:0">問題（名義模型直接用於小時級量測）</h3>
+      <ul>
+        <li>需反覆試誤重新調參（權重 Qz、執行器動作權重 S 等），作者報告約 3–4 次才穩定</li>
+        <li>提升機負荷約 3.5 小時才收斂</li>
+        <li>細度存在穩態偏差，操縱量振盪</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">作者的解法：半取樣延遲規則</h3>
+      <ul>
+        <li>只把控制器模型中<b>細度那一列</b>的兩條路徑，額外加上約半個品質取樣週期的延遲（每小時取樣 → +30 min）</li>
+        <li>式 (7.1)：G₂₁ 延遲 5 → 35 min、G₂₂ 延遲 0.1 → 30.1 min；負荷列（G₁₁、G₁₂）不變</li>
+        <li>效果：負荷約 1 小時收斂、細度標準差趨近零、<b>控制器權重維持名義值，僅調整一次</b></li>
+      </ul>
+    </div>
+  </div>
+  <p>機制解釋（對應 Table 7.1，紙本 p.142）：修改模型延遲會改變 FIR 係數與預測計算，進而改變 QP 的 Hessian；同時改變估測器回授的偏差項。因此「改模型」即可吸收慢速量測，不需重新整定權重。</p>
+  <div class="warn"><b>引用注意：</b>原文把「每小時取樣」「樣本化驗後輸入」「細度更新延遲一小時」混用，未拆分取樣間隔、物料傳輸延遲與化驗延遲各自的數值；本章也未給出控制器的實際運算週期（Ch.6 實廠的「每分鐘執行」不能套用到本章）。「+30 min」是模型修正的經驗法則，不是對實際延遲組成的宣稱。</div>
+</section>
+
+<!-- ================= 8. 批判性評估 ================= -->
+<section id="limits">
+  <h2><span class="no">08</span>批判性評估：證據的強度與缺口</h2>
+  <ol>
+    <li><b>「穩健」是模擬與實驗觀察，不是形式化證明。</b>全書沒有軟約束 MPC 的穩健穩定性（robust stability）數學證明；標題的 Robust 應理解為工程意義上的失配容忍。</li>
+    <li><b>容忍度數字不可外推。</b>§3.8 的 40%/50%/2× 來自特定 SISO 參數案例（如延遲 5→3 或 7 其實是 ±40% 案例、增益 1→2 是 +100%）；不能推論所有參數方向或 MIMO 組合「大於 50% 失配仍穩定」。摘要中「mismatch more than 50% 時傳統 MPC 振盪、軟 MPC 穩定」的說法僅對應部分展示案例。</li>
+    <li><b>50% 宣稱與正文數據口徑不一致</b>（見 6.1 節），且實廠 23% 缺少原始數據佐證。</li>
+    <li><b>雜訊尺度前後不一致：</b>Ch.4 不同段落分別出現 0.01 與 0.01²（變異數 vs 標準差易混淆）。</li>
+    <li><b>變數方向筆誤：</b>摘要與 Ch.8 各有一處把 MV/CV 寫反，閱讀時以 Ch.5/6 為準。</li>
+    <li><b>方法定位：</b>MHE（§3.5）是理論貢獻與 SISO 驗證，並未進入水泥磨實作；水泥磨章節使用的是簡易估測器。把整本論文概括為「MHE-based MPC 上廠」是不正確的。</li>
+    <li><b>實作時代背景：</b>求解器為作者自寫的 MATLAB 內點法（附錄 D/E），以 CEMulator/ECS 平台整合。今日讀者應關注其問題建模（FIR＋軟帶＋半取樣延遲規則），而非程式碼本身的工程價值。</li>
+  </ol>
+</section>
+
+<!-- ================= 9. 導讀地圖 ================= -->
+<section id="read">
+  <h2><span class="no">09</span>論文導讀地圖</h2>
+  <table>
+    <tr><th>章節</th><th>內容</th><th>建議讀法</th><th>紙本頁（PDF 頁）</th></tr>
+    <tr><td>摘要</td><td>問題、方法、兩個宣稱數字（50%、23%）</td><td>讀，但記得第 8 節的口徑保留</td><td class="page">iii–iv（5–6）</td></tr>
+    <tr><td>Ch.1–2</td><td>緒論、MPC 與水泥廠控制文獻回顧</td><td>跳讀</td><td class="page">19–42（36–59）</td></tr>
+    <tr><td>Ch.3</td><td>FIR-MPC、簡易估測器、MHE、軟約束推導</td><td><b>精讀 §3.3、§3.7</b>；MHE §3.5 選讀</td><td class="page">60–95（77–112）</td></tr>
+    <tr><td>Ch.4</td><td>SISO/MIMO 模擬比較</td><td>看圖 4.2–4.12 趨勢即可</td><td class="page">96–110（113–127）</td></tr>
+    <tr><td>Ch.5</td><td>水泥製程與模型辨識（式 5.1）</td><td>製程背景必讀</td><td class="page">110–125（127–142）</td></tr>
+    <tr><td>Ch.6</td><td>CEMulator 與真廠實測</td><td><b>精讀 §6.2–6.4</b>（含 MV 標準差表）</td><td class="page">124–135（141–152）</td></tr>
+    <tr><td>Ch.7</td><td>慢速品質量測、半取樣延遲規則、Table 7.1</td><td>應用價值最高，精讀</td><td class="page">136–142（153–159）</td></tr>
+    <tr><td>Ch.8</td><td>結論</td><td>對照第 8 節的保留意見閱讀</td><td class="page">143–148（160–165）</td></tr>
+    <tr><td>附錄 A–F</td><td>QP 推導（A.1–A.3）、流程圖、內點法、MATLAB 程式、CEMulator 說明</td><td>複現時參考；A.3 對應式 (3.22)</td><td class="page">149–193（166–210）</td></tr>
+  </table>
+</section>
+
+<!-- ================= 10. 術語表 ================= -->
+<section id="glossary">
+  <h2><span class="no">10</span>術語表</h2>
+  <table>
+    <tr><th>術語</th><th>說明</th></tr>
+    <tr><td>MPC（模型預測控制）</td><td>每個取樣時刻以模型預測未來輸出、求解有限視界最佳化，只執行第一步，下一時刻重算（receding horizon）。</td></tr>
+    <tr><td>MV / CV / DV</td><td>操縱量（控制器可調）／受控量（要維持目標）／擾動變數。本論文 DV 主要是熟料易磨性。</td></tr>
+    <tr><td>FIR 模型</td><td>有限脈衝響應模型：輸出 = 過去 n 個輸入的加權和（權重 H<sub>i</sub> 為馬可夫參數）。只需安定時間即可建立，適合缺漏量測，但僅限穩定系統。</td></tr>
+    <tr><td>SOPDT with zero</td><td>二階加純延遲且含零點的轉移函數，水泥磨辨識所得模型形式（式 5.1）。</td></tr>
+    <tr><td>簡易估測器</td><td>把預測誤差累積成偏差項 b̂，等效積分作用，消除穩態偏移（式 3.9）。</td></tr>
+    <tr><td>MHE（移動視窗估測）</td><td>在歷史視窗上把未知擾動序列當決策變數求解的估測器（式 3.14），可加約束但計算量大。</td></tr>
+    <tr><td>軟約束 / 死區（soft band）</td><td>設定點周圍的容忍帶：帶內輕罰、帶外重罰（二次＋線性），以鬆弛變數 η 實現，換取對雜訊與模型失配的不敏感。</td></tr>
+    <tr><td>QP / 內點法</td><td>二次規劃；作者將所有控制問題轉成標準凸 QP（附錄 A），以內點法求解（附錄 D）。</td></tr>
+    <tr><td>Blaine 細度</td><td>水泥比表面積（m²/kg），產品品質指標；本論文中為每小時化驗一次的慢速量測。</td></tr>
+    <tr><td>ECS/CEMulator</td><td>FLSmidth 的水泥廠控制系統與高保真模擬器，本論文的模擬器閉環驗證平台（附錄 F）。</td></tr>
+    <tr><td>半取樣延遲規則</td><td>品質每 T 取樣一次時，把控制器模型的品質路徑延遲額外加約 T/2（Ch.7 的經驗法則）。</td></tr>
+  </table>
+</section>
+
+</main>
+
+<footer><div class="wrap">
+  <p><b>來源：</b>GuruPrasath, M. (2011). <i>Robust Model Predictive Control of Cement Mill Circuits</i>. PhD thesis, National Institute of Technology, Tiruchirappalli.
+  PDF：<a class="srclink" href="https://www2.imm.dtu.dk/~jbjo/PhD_Thesis_2011_GuruPrasath.pdf">www2.imm.dtu.dk/~jbjo/PhD_Thesis_2011_GuruPrasath.pdf</a></p>
+  <p>本頁為繁體中文導讀，所有實驗數據與方程式均標註論文出處；第 8 節為導讀者基於原文數據的批判性整理。公式經 OCR 重建，正式引用請核對原 PDF。</p>
+</div></footer>
+
+<script>
+(function(){
+  var slider=document.getElementById('band'), out=document.getElementById('bandOut'),
+      rect=document.getElementById('bandRect'), lL=document.getElementById('bandL'),
+      lR=document.getElementById('bandR'), tL=document.getElementById('bandTxtL'),
+      tR=document.getElementById('bandTxtR'), soft=document.getElementById('softLine'),
+      ftxt=document.getElementById('formulaText');
+  if(!slider||!soft) return;
+  var Q_IN=0.05, NPTS=81;
+  function X(e){return 64+(e+2)*168;}
+  function Y(c){return 290-c*56;}
+  function draw(){
+    var b=parseFloat(slider.value);
+    out.textContent=b.toFixed(2);
+    var x1=X(-b), x2=X(b);
+    rect.setAttribute('x',x1.toFixed(1)); rect.setAttribute('width',(x2-x1).toFixed(1));
+    lL.setAttribute('x1',x1); lL.setAttribute('x2',x1);
+    lR.setAttribute('x1',x2); lR.setAttribute('x2',x2);
+    tL.setAttribute('x',x1); tL.textContent='−'+b.toFixed(2);
+    tR.setAttribute('x',x2); tR.textContent='+'+b.toFixed(2);
+    var pts=[], i, e, c;
+    for(i=0;i<NPTS;i++){
+      e=-2+i*(4/(NPTS-1));
+      c=Q_IN*e*e+Math.pow(Math.max(0,Math.abs(e)-b),2);
+      pts.push(X(e).toFixed(1)+','+Y(c).toFixed(1));
+    }
+    soft.setAttribute('points',pts.join(' '));
+    ftxt.textContent='ρ(e) = 0.05·e² ＋ max(0, |e| − '+b.toFixed(2)+')²';
+  }
+  slider.addEventListener('input',draw);
+  draw();
+})();
+</script>
+</body>
+</html>

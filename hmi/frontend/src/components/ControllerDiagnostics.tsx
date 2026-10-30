@@ -5,7 +5,7 @@ interface ControllerSummary {
   id: string;
   models: string[];
   active_model?: string;
-  state: any;
+  state: unknown;
   last_error?: string;
   started_at?: string;
   stopped_at?: string;
@@ -19,11 +19,16 @@ interface LogTailResponse {
   error?: string;
 }
 
-const parseState = (state: any): { status: 'Running' | 'Stopped' | 'Failed'; pid?: number } => {
+type ControllerStatus = 'Running' | 'Stopped' | 'Failed' | 'Unknown';
+
+const parseState = (state: unknown): { status: ControllerStatus; pid?: number } => {
   if (state === 'Stopped') return { status: 'Stopped' };
   if (state === 'Failed') return { status: 'Failed' };
-  if (typeof state === 'object' && state?.Running !== undefined) return { status: 'Running', pid: state.Running };
-  return { status: 'Stopped' };
+  if (state !== null && typeof state === 'object' && 'Running' in state
+      && typeof state.Running === 'number' && Number.isSafeInteger(state.Running) && state.Running > 0) {
+    return { status: 'Running', pid: state.Running };
+  }
+  return { status: 'Unknown' };
 };
 
 const formatRelative = (iso?: string): string => {
@@ -36,13 +41,13 @@ const formatRelative = (iso?: string): string => {
   return d.toLocaleString();
 };
 
-const stateColor = (status: 'Running' | 'Stopped' | 'Failed') => {
+const stateColor = (status: ControllerStatus) => {
   if (status === 'Running') return 'text-emerald-400';
   if (status === 'Failed') return 'text-red-400';
   return 'text-slate-400';
 };
 
-const stateDot = (status: 'Running' | 'Stopped' | 'Failed') => {
+const stateDot = (status: ControllerStatus) => {
   if (status === 'Running') return 'bg-emerald-400 animate-pulse';
   if (status === 'Failed') return 'bg-red-500';
   return 'bg-slate-500';
@@ -67,8 +72,8 @@ export const ControllerDiagnostics: React.FC<Props> = ({ controllerId, summary }
       const data: LogTailResponse = await res.json();
       setLog(data);
       setLogError(null);
-    } catch (e: any) {
-      setLogError(e.message ?? 'Failed to fetch log');
+    } catch (e: unknown) {
+      setLogError(e instanceof Error ? e.message : 'Failed to fetch log');
     } finally {
       setLogLoading(false);
     }

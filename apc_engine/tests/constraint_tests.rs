@@ -10,24 +10,21 @@ fn test_mv_respects_limits() {
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
     
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
     
     // MV at 85%, limit is 90%, CV needs to go up
-    let result = controller.next_move(
-        &[40.0],  // CV low
-        &[50.0],  // Target
-        &[85.0],  // MV near high limit
-        &[],      // No DVs
-        &[],      // No MV targets
-        &[10.0],  // MV low
-        &[90.0],  // MV high (only 5% headroom)
-        &[20.0],  // CV min
-        &[80.0],  // CV max
-        &[1.0],   // CV weight
-        &[0.0],   // CV alpha
-        &[0.1],   // MV weight
-        true,
-    );
+    let result = controller.next_move(&[40.0],  // CV low
+    &[50.0],  // Target
+    &[85.0],  // MV near high limit
+    &[],      // No DVs
+    &[85.0],  // MV target (tracking weight is zero)
+    &[10.0],  // MV low
+    &[90.0],  // MV high (only 5% headroom)
+    &[20.0],  // CV min
+    &[80.0],  // CV max
+    &[1.0],   // CV weight
+    &[0.0],   // CV alpha
+    &[0.1],);
     
     assert_eq!(result.status, SolverStatus::Solved);
     

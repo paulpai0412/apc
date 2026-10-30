@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface ModelMetadata {
@@ -95,7 +95,7 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({ controllerId }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [hoveredCell, setHoveredCell] = useState<{ cvIdx: number; inputIdx: number; inputType: 'MV' | 'DV' } | null>(null);
 
-  const fetchModel = async () => {
+  const fetchModel = useCallback(async () => {
     setLoading(true);
     setError(null);
     setModel(null);
@@ -116,17 +116,17 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({ controllerId }) => {
       }
       const data = await response.json();
       setModel(data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load model');
+    } catch (err: unknown) {
+      setError(err instanceof Error && err.message ? err.message : 'Failed to load model');
       console.error('Model fetch error:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [controllerId]);
 
   useEffect(() => {
     fetchModel();
-  }, [controllerId]);
+  }, [fetchModel]);
 
   if (loading) {
     return (
@@ -269,7 +269,7 @@ export const ModelsTab: React.FC<ModelsTabProps> = ({ controllerId }) => {
     // Find 95% settling time
     const steadyStateValue = finalGain;
     const threshold = Math.abs(steadyStateValue * 0.95);
-    let settlingIndex = chartData.findIndex(pt => Math.abs(pt.gain) >= threshold);
+    const settlingIndex = chartData.findIndex(pt => Math.abs(pt.gain) >= threshold);
     const settlingTime = settlingIndex >= 0 ? chartData[settlingIndex].time : chartData[chartData.length - 1]?.time || 0;
 
     return (

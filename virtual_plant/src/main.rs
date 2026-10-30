@@ -11,7 +11,7 @@ use std::time::Duration;
 use opcua::{
     client::{ClientBuilder, IdentityToken},
     crypto::{SecurityPolicy, X509, PrivateKey},
-    types::{MessageSecurityMode, NodeId, UserTokenPolicy, UserTokenType},
+    types::{MessageSecurityMode, NodeId, UserTokenPolicy, UserTokenType, Variant},
 };
 
 use plant::debutanizer::{DebutanizerModel, ColumnConfig, ModelInputs, MW, DENSITY};
@@ -25,11 +25,9 @@ use config::{AppSettings, AuthMode};
 const NODE_REFLUX_SP: &str = "Reflux:SP"; 
 const NODE_REFLUX_PV: &str = "Reflux:PV";
 const NODE_REFLUX_OP: &str = "Reflux:OP";
-const NODE_REFLUX_MODE: &str = "Reflux:Mode";
 const NODE_STEAM_SP: &str  = "Steam:SP";   
 const NODE_STEAM_PV: &str  = "Steam:PV";
 const NODE_STEAM_OP: &str  = "Steam:OP";
-const NODE_STEAM_MODE: &str = "Steam:Mode";
 const NODE_FEED_DV: &str   = "Feed_Flow:PV"; 
 const NODE_TOP_C4_CV: &str = "Top_C4:PV";      
 const NODE_BTM_TEMP_CV: &str = "Btm_Temp:PV";
@@ -44,7 +42,6 @@ const NODE_CSTR_CONC_CV: &str    = "CSTR_Conc:PV";
 
 // VP_PassBalancing Nodes
 const NODE_FLOW_MASTER_OP: &str = "FlowMaster:OP";
-const NODE_FLOW_MASTER_SP: &str = "FlowMaster:SP";
 const NODE_FLOW_MASTER_PV: &str = "FlowMaster:PV";
 const NODE_COKE_ENABLE: &str = "PassBalancing:CokeEnable";
 const NODE_DISTURBANCE_ENABLE: &str = "PassBalancing:DisturbanceEnable";
@@ -53,10 +50,6 @@ const NODE_DISTURBANCE_CV_TARGET: &str = "DisturbanceEnable:Target";
 const NODE_SUM_BIAS: &str = "PassBalancing:Sum_Bias";
 const NODE_SUM_BIAS_CV_PV: &str = "Sum_Bias:PV";
 
-// Cyclic disturbance profile: offsets define amplitude (+/-), ramps define speed.
-// Tuned slow enough so MPC can meaningfully counteract during tests.
-const DISTURBANCE_TEST_OFFSETS: [f64; 6] = [1.8, 1.2, 0.8, 0.8, 1.2, 1.8];
-const DISTURBANCE_TEST_RAMPS_PER_MIN: [f64; 6] = [0.04, 0.03, 0.025, 0.025, 0.03, 0.04];
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -116,13 +109,24 @@ async fn main() -> Result<()> {
     // 4. Define Nodes
     let namespace = settings.opcua.namespace_index;
     
-    let read_nodes = vec![
+    let mut read_nodes = vec![
         NodeId::new(namespace, NODE_REFLUX_SP),
         NodeId::new(namespace, NODE_STEAM_SP),
         NodeId::new(namespace, NODE_FEED_DV),
         NodeId::new(namespace, NODE_CSTR_COOLING_SP),
         NodeId::new(namespace, NODE_CSTR_FEED_DV),
     ];
+    let acquisition_nodes = vec![
+        NodeId::new(2, settings.acquisition.debutanizer.as_str()),
+        NodeId::new(2, settings.acquisition.cstr.as_str()),
+        NodeId::new(2, settings.acquisition.pass_balancing.as_str()),
+    ];
+    let mut acquisition_sequence = opc_interface::AcquisitionSequence::default();
+    let write_reflux_applied = NodeId::new(namespace, "Reflux:AppliedSP");
+    let write_steam_applied = NodeId::new(namespace, "Steam:AppliedSP");
+    let write_cstr_applied = NodeId::new(namespace, "CSTR_Cooling:AppliedSP");
+    let write_feed_acquired = NodeId::new(namespace, "Feed_Flow:AcquiredPV");
+    let write_cstr_feed_acquired = NodeId::new(namespace, "CSTR_Feed:AcquiredPV");
 
     let write_deb_top = NodeId::new(namespace, NODE_TOP_C4_CV);
     let write_deb_btm = NodeId::new(namespace, NODE_BTM_TEMP_CV);
@@ -137,7 +141,6 @@ async fn main() -> Result<()> {
     let write_cstr_cool_op = NodeId::new(namespace, NODE_CSTR_COOLING_OP);
 
     let node_flow_master_op = NodeId::new(namespace, NODE_FLOW_MASTER_OP);
-    let node_flow_master_sp = NodeId::new(namespace, NODE_FLOW_MASTER_SP);
     let write_flow_master_pv = NodeId::new(namespace, NODE_FLOW_MASTER_PV);
     let node_coke_enable = NodeId::new(namespace, NODE_COKE_ENABLE);
     let node_disturbance_enable = NodeId::new(namespace, NODE_DISTURBANCE_ENABLE);
@@ -154,6 +157,9 @@ async fn main() -> Result<()> {
         .collect();
     let fc_bias_op_nodes: Vec<NodeId> = (1..=6)
         .map(|i| NodeId::new(namespace, format!("FC{}_Bias:OP", i)))
+        .collect();
+    let fc_bias_applied_nodes: Vec<NodeId> = (1..=6)
+        .map(|i| NodeId::new(namespace, format!("FC{}_Bias:AppliedSP", i)))
         .collect();
     let fc_op_nodes: Vec<NodeId> = (1..=6)
         .map(|i| NodeId::new(namespace, format!("FC{}:OP", i)))
@@ -176,6 +182,14 @@ async fn main() -> Result<()> {
     let coke_ramp_nodes: Vec<NodeId> = (1..=6)
         .map(|i| NodeId::new(namespace, format!("Pass{}:CokeRampPerMin", i)))
         .collect();
+
+    // One checked acquisition reads all real simulator inputs after setting odd.
+    read_nodes.push(node_flow_master_op.clone());
+    read_nodes.extend(fc_bias_sp_nodes.iter().cloned());
+    read_nodes.push(node_coke_enable.clone());
+    read_nodes.push(node_disturbance_cv_target.clone());
+    read_nodes.extend(coke_offset_nodes.iter().cloned());
+    read_nodes.extend(coke_ramp_nodes.iter().cloned());
 
     // 5. Initialize Physics Engines
     let mut plant_deb = DebutanizerModel::new(ColumnConfig {
@@ -277,215 +291,118 @@ async fn main() -> Result<()> {
         println!("Waiting for session to stabilize...");
         tokio::time::sleep(Duration::from_secs(3)).await;
         
-        // Initialize OPC UA nodes with startup values
-        println!("Sending initial values to OPC UA server...");
-        let init_reflux = 75.0;
-        let init_steam = 150.0;
-        let init_feed = 150.0;
-        let init_mode = 3.0;  // Mode 3 for immediate control
-        
-        if let Err(e) = opc_interface::write_single(&session, &write_reflux_pv, init_reflux).await {
-            println!("  Warning: Failed to write Reflux:PV - {}", e);
-        }
-        if let Err(e) = opc_interface::write_single(&session, &write_reflux_op, init_reflux).await {
-            println!("  Warning: Failed to write Reflux:OP - {}", e);
-        }
-        if let Err(e) = opc_interface::write_single(&session, &NodeId::new(namespace, NODE_REFLUX_SP), init_reflux).await {
-            println!("  Warning: Failed to write Reflux:SP - {}", e);
-        }
-        if let Err(e) = opc_interface::write_single(&session, &NodeId::new(namespace, NODE_REFLUX_MODE), init_mode).await {
-            println!("  Warning: Failed to write Reflux:Mode - {}", e);
-        }
-        if let Err(e) = opc_interface::write_single(&session, &NodeId::new(namespace, "Reflux:ModeTarget"), init_mode).await {
-            println!("  Warning: Failed to write Reflux:ModeTarget - {}", e);
-        }
-        
-        if let Err(e) = opc_interface::write_single(&session, &write_steam_pv, init_steam).await {
-            println!("  Warning: Failed to write Steam:PV - {}", e);
-        }
-        if let Err(e) = opc_interface::write_single(&session, &write_steam_op, init_steam).await {
-            println!("  Warning: Failed to write Steam:OP - {}", e);
-        }
-        if let Err(e) = opc_interface::write_single(&session, &NodeId::new(namespace, NODE_STEAM_SP), init_steam).await {
-            println!("  Warning: Failed to write Steam:SP - {}", e);
-        }
-        if let Err(e) = opc_interface::write_single(&session, &NodeId::new(namespace, NODE_STEAM_MODE), init_mode).await {
-            println!("  Warning: Failed to write Steam:Mode - {}", e);
-        }
-        if let Err(e) = opc_interface::write_single(&session, &NodeId::new(namespace, "Steam:ModeTarget"), init_mode).await {
-            println!("  Warning: Failed to write Steam:ModeTarget - {}", e);
-        }
-        
-        if let Err(e) = opc_interface::write_single(&session, &NodeId::new(namespace, NODE_FEED_DV), init_feed).await {
-            println!("  Warning: Failed to write Feed_Flow:PV - {}", e);
-        }
-
-        let _ = opc_interface::write_single(&session, &node_flow_master_op, 50.0).await;
-        let _ = opc_interface::write_single(&session, &node_flow_master_sp, 300.0).await;
-        let _ = opc_interface::write_single(&session, &write_flow_master_pv, 300.0).await;
-        let _ = opc_interface::write_single(&session, &node_coke_enable, 0.0).await;
-        let _ = opc_interface::write_single(&session, &node_disturbance_enable, 0.0).await;
-        let _ = opc_interface::write_single(&session, &write_disturbance_cv_pv, 0.0).await;
-        let _ = opc_interface::write_single(&session, &node_disturbance_cv_target, 0.0).await;
-        let _ = opc_interface::write_single(&session, &write_sum_bias, 0.0).await;
-        let _ = opc_interface::write_single(&session, &write_sum_bias_cv_pv, 0.0).await;
-        for i in 0..6 {
-            let _ = opc_interface::write_single(&session, &fc_bias_sp_nodes[i], 0.0).await;
-            let _ = opc_interface::write_single(&session, &fc_bias_pv_nodes[i], 0.0).await;
-            let _ = opc_interface::write_single(&session, &fc_bias_op_nodes[i], 0.0).await;
-            let _ = opc_interface::write_single(&session, &coke_offset_nodes[i], DISTURBANCE_TEST_OFFSETS[i]).await;
-            let _ = opc_interface::write_single(&session, &coke_ramp_nodes[i], DISTURBANCE_TEST_RAMPS_PER_MIN[i]).await;
-        }
-
-        println!(
-            "PassBalancing disturbance profile loaded: offsets={:?}, ramps/min={:?}",
-            DISTURBANCE_TEST_OFFSETS,
-            DISTURBANCE_TEST_RAMPS_PER_MIN
-        );
-        
-        println!("Initial values set: Reflux={}m³/h, Steam={}m³/h, Feed={}m³/h, Mode={}", 
-                 init_reflux, init_steam, init_feed, init_mode as i32);
-        
-        // Give writes time to complete
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // 7. Simulation Loop
+        // No startup SP, PID mode, ModeTarget, target, tuning or limit writes.
+        // This simulator has ideal SP tracking for Reflux/Steam/CSTR_Cooling and
+        // additive pass bias commands; its physical equations are not an actuator proof.
+        let mut frame = Vec::with_capacity(68);
         loop {
-            match opc_interface::read_bulk(&session, &read_nodes).await {
-                Ok(vals) => {
-                    // Parse inputs
-                    let reflux_m3h = vals.get(0).unwrap_or(&100.0).max(0.0);
-                    let steam_m3h  = vals.get(1).unwrap_or(&135.0).max(0.0);
-                    let feed_m3h   = vals.get(2).unwrap_or(&150.0).max(0.0);
-                    let cool_temp = vals.get(3).unwrap_or(&300.0).max(250.0);
-                    let feed_flow = vals.get(4).unwrap_or(&6.0).max(0.0);
+            let observed = opc_interface::read_bulk(&session, &acquisition_nodes).await
+                .context("Required AcquisitionSequence nodes unreadable; publication stopped")?;
+            let (odd, even) = acquisition_sequence.reserve(&observed)?;
+            opc_interface::write_sequence(&session, &acquisition_nodes, odd).await
+                .context("Cannot mark acquisition in progress; publication stopped")?;
 
-                    // Prepare inputs
-                    let deb_inputs = ModelInputs {
-                        reflux_l: (reflux_m3h * DENSITY) / MW,
-                        boilup_v: (steam_m3h  * DENSITY) / MW, 
-                        feed_f:   (feed_m3h   * DENSITY) / MW,
-                        feed_z: 0.5, 
-                    };
+            // Every error below is fatal, leaving the in-progress counters odd.
+            // Never reconnect and silently claim a failed/unknown frame succeeded.
+            let vals = opc_interface::read_bulk(&session, &read_nodes).await
+                .context("Process acquisition failed; counters remain odd")?;
+            let reflux_m3h = vals[0].max(0.0);
+            let steam_m3h = vals[1].max(0.0);
+            let feed_m3h = vals[2].max(0.0);
+            let cool_temp = vals[3].max(250.0);
+            let feed_flow = vals[4].max(0.0);
+            let flow_master_op = vals[5];
+            let mut bias_sp = [0.0; 6];
+            bias_sp.copy_from_slice(&vals[6..12]);
+            let coke_enable = vals[12] >= 0.5;
+            let disturbance_enable = vals[13].clamp(0.0, 1.0) >= 0.5;
+            let mut coke_offset = [0.0; 6];
+            coke_offset.copy_from_slice(&vals[14..20]);
+            let mut coke_ramp_per_min = [0.0; 6];
+            coke_ramp_per_min.copy_from_slice(&vals[20..26]);
 
-                    let cstr_inputs = CSTRInputs {
-                        flow_f: feed_flow,
-                        cool_temp: cool_temp,
-                        ca_feed: 10.0, 
-                        t_feed: 300.0, 
-                    };
+            let deb_inputs = ModelInputs {
+                reflux_l: (reflux_m3h * DENSITY) / MW,
+                boilup_v: (steam_m3h * DENSITY) / MW,
+                feed_f: (feed_m3h * DENSITY) / MW,
+                feed_z: 0.5,
+            };
+            let cstr_inputs = CSTRInputs {
+                flow_f: feed_flow,
+                cool_temp,
+                ca_feed: 10.0,
+                t_feed: 300.0,
+            };
+            let pass_inputs = PassBalancingInputs {
+                flow_master_op,
+                bias_sp,
+                coke_enable: disturbance_enable || coke_enable,
+                coke_offset,
+                coke_ramp_per_min,
+            };
 
-                    let flow_master_op = opc_interface::read_bulk(&session, &[node_flow_master_op.clone()])
-                        .await
-                        .ok()
-                        .and_then(|v| v.first().copied())
-                        .unwrap_or(50.0);
-
-                    let mut bias_sp = [0.0; 6];
-                    if let Ok(vals) = opc_interface::read_bulk(&session, &fc_bias_sp_nodes).await {
-                        for i in 0..6 {
-                            bias_sp[i] = *vals.get(i).unwrap_or(&0.0);
-                        }
-                    }
-
-                    let coke_enable = opc_interface::read_bulk(&session, &[node_coke_enable.clone()])
-                        .await
-                        .ok()
-                        .and_then(|v| v.first().copied())
-                        .unwrap_or(0.0)
-                        >= 0.5;
-
-                    let disturbance_target = opc_interface::read_bulk(&session, &[node_disturbance_cv_target.clone()])
-                        .await
-                        .ok()
-                        .and_then(|v| v.first().copied())
-                        .unwrap_or(1.0)
-                        .clamp(0.0, 1.0);
-                    let disturbance_enable = disturbance_target >= 0.5;
-
-                    let mut coke_offset = [0.0; 6];
-                    if let Ok(vals) = opc_interface::read_bulk(&session, &coke_offset_nodes).await {
-                        for i in 0..6 {
-                            coke_offset[i] = *vals.get(i).unwrap_or(&0.0);
-                        }
-                    }
-
-                    let mut coke_ramp_per_min = [0.0; 6];
-                    if let Ok(vals) = opc_interface::read_bulk(&session, &coke_ramp_nodes).await {
-                        for i in 0..6 {
-                            coke_ramp_per_min[i] = *vals.get(i).unwrap_or(&0.0);
-                        }
-                    }
-
-                    let pass_inputs = PassBalancingInputs {
-                        flow_master_op,
-                        bias_sp,
-                        // DisturbanceEnable target is the primary runtime command.
-                        // Keep CokeEnable as legacy compatibility fallback.
-                        coke_enable: disturbance_enable || coke_enable,
-                        coke_offset,
-                        coke_ramp_per_min,
-                    };
-
-                    // Run simulation steps (speedup from config)
-                    let mut deb_out = plant_deb.step(&deb_inputs);
-                    let mut cstr_out = plant_cstr.step(&cstr_inputs);
-                    let mut pass_out = plant_pass.step(&pass_inputs);
-
-                    for _ in 0..(settings.runtime.speed_multiplier - 1) {
-                        deb_out = plant_deb.step(&deb_inputs);
-                        cstr_out = plant_cstr.step(&cstr_inputs);
-                        pass_out = plant_pass.step(&pass_inputs);
-                    }
-
-                    // Write outputs
-                    let _ = opc_interface::write_single(&session, &write_deb_top, deb_out.top_c4_frac).await;
-                    let _ = opc_interface::write_single(&session, &write_deb_btm, deb_out.bottom_temp_deg_c).await;
-                    let _ = opc_interface::write_single(&session, &write_reflux_pv, reflux_m3h).await;
-                    let _ = opc_interface::write_single(&session, &write_reflux_op, reflux_m3h).await;
-                    let _ = opc_interface::write_single(&session, &write_steam_pv, steam_m3h).await;
-                    let _ = opc_interface::write_single(&session, &write_steam_op, steam_m3h).await;
-
-                    let _ = opc_interface::write_single(&session, &write_cstr_temp, cstr_out.t).await;
-                    let _ = opc_interface::write_single(&session, &write_cstr_conc, cstr_out.ca).await;
-                    let _ = opc_interface::write_single(&session, &write_cstr_cool_pv, cool_temp).await;
-                    let _ = opc_interface::write_single(&session, &write_cstr_cool_op, cool_temp).await;
-
-                    let _ = opc_interface::write_single(&session, &write_flow_master_pv, pass_out.total_flow).await;
-                    let _ = opc_interface::write_single(&session, &node_disturbance_enable, if disturbance_enable { 1.0 } else { 0.0 }).await;
-                    let _ = opc_interface::write_single(&session, &write_disturbance_cv_pv, if disturbance_enable { 1.0 } else { 0.0 }).await;
-                    let _ = opc_interface::write_single(&session, &write_sum_bias, pass_out.sum_bias).await;
-                    let _ = opc_interface::write_single(&session, &write_sum_bias_cv_pv, pass_out.sum_bias).await;
-                    for i in 0..6 {
-                        let _ = opc_interface::write_single(&session, &t_pv_nodes[i], pass_out.temperatures[i]).await;
-                        let _ = opc_interface::write_single(&session, &tdev_pv_nodes[i], pass_out.temp_deviation[i]).await;
-                        let _ = opc_interface::write_single(&session, &fc_op_nodes[i], pass_out.valve_op[i]).await;
-                        let _ = opc_interface::write_single(&session, &fc_pv_nodes[i], pass_out.valve_op[i]).await;
-                        let _ = opc_interface::write_single(&session, &fc_bias_pv_nodes[i], bias_sp[i]).await;
-                        let _ = opc_interface::write_single(&session, &fc_bias_op_nodes[i], bias_sp[i]).await;
-                        let _ = opc_interface::write_single(&session, &pass_flow_nodes[i], pass_out.pass_flow[i]).await;
-                    }
-
-                    // Log status
-                    println!(
-                        "Tick (+{}s): [DEB] C4:{:.2}% BtmT:{:.1}C | [CSTR] T:{:.1}K Ca:{:.2}kmol/m3 | [PASS] TDev1:{:+.2} TDev6:{:+.2} SumBias:{:+.2}", 
-                        settings.runtime.speed_multiplier,
-                        deb_out.top_c4_frac * 100.0,
-                        deb_out.bottom_temp_deg_c,
-                        cstr_out.t,
-                        cstr_out.ca,
-                        pass_out.temp_deviation[0],
-                        pass_out.temp_deviation[5],
-                        pass_out.sum_bias
-                    );
-                }
-                Err(e) => {
-                    println!("Read Error: {}. Reconnecting...", e);
-                    break; 
-                }
+            // Retain the existing physics step counts, clamps and model parameters.
+            let mut deb_out = plant_deb.step(&deb_inputs);
+            let mut cstr_out = plant_cstr.step(&cstr_inputs);
+            let mut pass_out = plant_pass.step(&pass_inputs);
+            for _ in 0..(settings.runtime.speed_multiplier - 1) {
+                deb_out = plant_deb.step(&deb_inputs);
+                cstr_out = plant_cstr.step(&cstr_inputs);
+                pass_out = plant_pass.step(&pass_inputs);
             }
+
+            // Full CV / effective-MV / sampled-DV frame, plus simulator telemetry.
+            // AppliedSP and AcquiredPV are producer-owned, unlike command SP / feed PV.
+            frame.clear();
+            frame.extend([
+                (&write_deb_top, Variant::Double(deb_out.top_c4_frac)),
+                (&write_deb_btm, Variant::Double(deb_out.bottom_temp_deg_c)),
+                (&write_reflux_pv, Variant::Double(reflux_m3h)),
+                (&write_reflux_op, Variant::Double(reflux_m3h)),
+                (&write_reflux_applied, Variant::Double(reflux_m3h)),
+                (&write_steam_pv, Variant::Double(steam_m3h)),
+                (&write_steam_op, Variant::Double(steam_m3h)),
+                (&write_steam_applied, Variant::Double(steam_m3h)),
+                (&write_feed_acquired, Variant::Double(feed_m3h)),
+                (&write_cstr_temp, Variant::Double(cstr_out.t)),
+                (&write_cstr_conc, Variant::Double(cstr_out.ca)),
+                (&write_cstr_cool_pv, Variant::Double(cool_temp)),
+                (&write_cstr_cool_op, Variant::Double(cool_temp)),
+                (&write_cstr_applied, Variant::Double(cool_temp)),
+                (&write_cstr_feed_acquired, Variant::Double(feed_flow)),
+                (&write_flow_master_pv, Variant::Double(pass_out.total_flow)),
+                (&node_disturbance_enable, Variant::Boolean(disturbance_enable)),
+                (&write_disturbance_cv_pv, Variant::Double(if disturbance_enable { 1.0 } else { 0.0 })),
+                (&write_sum_bias, Variant::Double(pass_out.sum_bias)),
+                (&write_sum_bias_cv_pv, Variant::Double(pass_out.sum_bias)),
+            ]);
+            for i in 0..6 {
+                // Preserve bias-SP coordinates after the existing valve clamp;
+                // absolute valve OP is not the model's manipulated variable.
+                let applied_bias = pass_out.valve_op[i] - flow_master_op;
+                frame.extend([
+                    (&t_pv_nodes[i], Variant::Double(pass_out.temperatures[i])),
+                    (&tdev_pv_nodes[i], Variant::Double(pass_out.temp_deviation[i])),
+                    (&fc_op_nodes[i], Variant::Double(pass_out.valve_op[i])),
+                    (&fc_pv_nodes[i], Variant::Double(pass_out.pass_flow[i])),
+                    (&fc_bias_pv_nodes[i], Variant::Double(applied_bias)),
+                    (&fc_bias_op_nodes[i], Variant::Double(bias_sp[i])),
+                    (&fc_bias_applied_nodes[i], Variant::Double(applied_bias)),
+                    (&pass_flow_nodes[i], Variant::Double(pass_out.pass_flow[i])),
+                ]);
+            }
+            opc_interface::write_bulk(&session, &frame).await
+                .context("Process frame write failed/unknown; counters remain odd; publication stopped")?;
+            opc_interface::commit_sequence(&session, &acquisition_nodes, even).await?;
+
+            println!(
+                "Tick (+{}s, acquisition {}): [DEB] C4:{:.2}% BtmT:{:.1}C | [CSTR] T:{:.1}K Ca:{:.2}kmol/m3 | [PASS] TDev1:{:+.2} TDev6:{:+.2} SumBias:{:+.2}",
+                settings.runtime.speed_multiplier, even,
+                deb_out.top_c4_frac * 100.0, deb_out.bottom_temp_deg_c,
+                cstr_out.t, cstr_out.ca,
+                pass_out.temp_deviation[0], pass_out.temp_deviation[5], pass_out.sum_bias
+            );
             tokio::time::sleep(Duration::from_millis(settings.runtime.cycle_time_ms)).await;
         }
-        tokio::time::sleep(Duration::from_secs(settings.runtime.reconnect_delay_sec)).await;
     }
 }

@@ -12,6 +12,7 @@ interface TagStore {
   // State
   tags: Record<string, OpcUpdate>;
   pendingWrites: Set<string>;
+  lastWriteError: string | null;
   
   // Actions
   updateTag: (update: OpcUpdate) => void;
@@ -19,6 +20,7 @@ interface TagStore {
   setPending: (nodeId: string) => void;
   clearPending: (nodeId: string) => void;
   isPending: (nodeId: string) => boolean;
+  setWriteError: (error: string | null) => void;
   
   // Selectors (for performance)
   getTag: (nodeId: string) => OpcUpdate | undefined;
@@ -28,22 +30,16 @@ interface TagStore {
 export const useTagStore = create<TagStore>((set, get) => ({
   tags: {},
   pendingWrites: new Set<string>(),
+  lastWriteError: null,
+  setWriteError: (lastWriteError) => set({ lastWriteError }),
   
   updateTag: (update: OpcUpdate) => {
     set((state) => {
-      const newPending = new Set(state.pendingWrites);
-      
-      // If this tag was pending a write, clear it (write acknowledged!)
-      if (newPending.has(update.node_id)) {
-        newPending.delete(update.node_id);
-      }
-      
       return {
         tags: {
           ...state.tags,
           [update.node_id]: update
-        },
-        pendingWrites: newPending
+        }
       };
     });
   },
@@ -51,18 +47,13 @@ export const useTagStore = create<TagStore>((set, get) => ({
   updateTags: (updates: OpcUpdate[]) => {
     set((state) => {
       const newTags = { ...state.tags };
-      const newPending = new Set(state.pendingWrites);
       
       updates.forEach(update => {
         newTags[update.node_id] = update;
-        if (newPending.has(update.node_id)) {
-          newPending.delete(update.node_id);
-        }
       });
       
       return {
-        tags: newTags,
-        pendingWrites: newPending
+        tags: newTags
       };
     });
   },

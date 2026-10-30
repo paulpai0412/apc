@@ -3,6 +3,7 @@ name = "authrity-apc-engine"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+default-run = "authrity-apc-engine"
 
 [dependencies]
 # Async Runtime
@@ -19,10 +20,11 @@ clarabel = "0.11.1" # Upgraded for solver reuse and Auto factorization
 # Serialization (Required for model.json)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0" # <--- ADDED: Necessary for loading your config
+sha2 = "0.10"
 serde_yaml = "0.9"
 
 # Time & Date
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
 # Logging
 log = "0.4"
@@ -35,6 +37,9 @@ tracing-subscriber = "0.3"
 anyhow = "1.0"
 toml = "0.9.10"
 clap = { version = "4.5.54", features = ["derive"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # Only used during testing (cargo test)

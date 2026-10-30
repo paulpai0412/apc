@@ -11,7 +11,7 @@ fn test_controller_initialization() {
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
     
-    let _controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let _controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
     
     assert!(true, "Controller initialized successfully");
 }
@@ -22,7 +22,7 @@ fn test_basic_control_move() {
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
     
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
     
     // CV below target → MV should increase
     let result = controller.next_move(
@@ -30,7 +30,7 @@ fn test_basic_control_move() {
         &[50.0],      // targets
         &[50.0],      // current_mvs
         &[],          // current_dvs
-        &[],          // mv_targets
+        &[50.0],      // mv_targets (tracking weight is zero)
         &[10.0],      // dynamic_min
         &[90.0],      // dynamic_max
         &[20.0],      // cv_min
@@ -38,7 +38,6 @@ fn test_basic_control_move() {
         &[1.0],       // cv_weights
         &[0.0],       // cv_alphas
         &[0.1],       // mv_weights
-        true,         // commit
     );
     
     assert_eq!(result.status, SolverStatus::Solved);
@@ -54,24 +53,21 @@ fn test_2x2_mimo_control() {
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
     
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
     
     // Both CVs below target
-    let result = controller.next_move(
-        &[40.0, 38.0],    // current_pvs - both low
-        &[50.0, 45.0],    // targets
-        &[50.0, 50.0],    // current_mvs
-        &[],              // No DVs
-        &[],              // No MV targets
-        &[10.0, 10.0],    // dynamic_min
-        &[90.0, 90.0],    // dynamic_max
-        &[20.0, 20.0],    // cv_min
-        &[80.0, 80.0],    // cv_max
-        &[1.0, 1.0],      // cv_weights
-        &[0.0, 0.0],      // cv_alphas
-        &[0.1, 0.1],      // mv_weights
-        true,
-    );
+    let result = controller.next_move(&[40.0, 38.0],    // current_pvs - both low
+    &[50.0, 45.0],    // targets
+    &[50.0, 50.0],    // current_mvs
+    &[],              // No DVs
+    &[50.0, 50.0],    // MV targets (tracking weights are zero)
+    &[10.0, 10.0],    // dynamic_min
+    &[90.0, 90.0],    // dynamic_max
+    &[20.0, 20.0],    // cv_min
+    &[80.0, 80.0],    // cv_max
+    &[1.0, 1.0],      // cv_weights
+    &[0.0, 0.0],      // cv_alphas
+    &[0.1, 0.1],);
     
     assert_eq!(result.status, SolverStatus::Solved);
     
@@ -90,7 +86,7 @@ fn test_dv_feedforward() {
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
     
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
     
     // First cycle: Establish baseline with DV=50
     controller.next_move(
@@ -98,7 +94,7 @@ fn test_dv_feedforward() {
         &[50.0],       // Target
         &[50.0],       // MV
         &[50.0],       // DV = 50 (baseline)
-        &[],           // No MV targets
+        &[50.0],       // MV target (tracking weight is zero)
         &[10.0],       // MV low
         &[90.0],       // MV high
         &[20.0],       // CV min
@@ -106,7 +102,6 @@ fn test_dv_feedforward() {
         &[1.0],        // CV weight
         &[0.0],        // CV alpha
         &[0.1],        // MV weight
-        true,          // Commit to store DV state
     );
     
     // Second cycle: DV increases to 60 (delta = +10)
@@ -117,7 +112,7 @@ fn test_dv_feedforward() {
         &[50.0],       // Target
         &[50.0],       // MV
         &[60.0],       // DV = 60 (disturbance injected!)
-        &[],           // No MV targets
+        &[50.0],       // MV target (tracking weight is zero)
         &[10.0],       // MV low
         &[90.0],       // MV high
         &[20.0],       // CV min
@@ -125,7 +120,6 @@ fn test_dv_feedforward() {
         &[1.0],        // CV weight
         &[0.0],        // CV alpha
         &[0.1],        // MV weight
-        false,         // Don't commit
     );
     
     assert_eq!(result.status, SolverStatus::Solved);
@@ -146,25 +140,22 @@ fn test_infeasible_problem() {
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
     
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
     
     // CV far below target, but MV already at high limit with no headroom
     // Impossible to satisfy both constraints
-    let result = controller.next_move(
-        &[30.0],       // CV very low
-        &[80.0],       // Target very high
-        &[89.9],       // MV at high limit
-        &[],           // No DVs
-        &[],           // No MV targets
-        &[89.0],       // MV low limit very close to current
-        &[90.0],       // MV high limit (only 0.1% headroom)
-        &[20.0],       // CV min
-        &[80.0],       // CV max
-        &[1.0],        // CV weight
-        &[0.0],        // CV alpha
-        &[0.1],        // MV weight
-        true,
-    );
+    let result = controller.next_move(&[30.0],       // CV very low
+    &[80.0],       // Target very high
+    &[89.9],       // MV at high limit
+    &[],           // No DVs
+    &[50.0],       // MV target (tracking weight is zero)
+    &[89.0],       // MV low limit very close to current
+    &[90.0],       // MV high limit (only 0.1% headroom)
+    &[20.0],       // CV min
+    &[80.0],       // CV max
+    &[1.0],        // CV weight
+    &[0.0],        // CV alpha
+    &[0.1],);
     
     // Should still solve (soft constraints allow violations) but check status
     // Status should be Solved or PrimalInfeasible depending on constraints
@@ -188,23 +179,20 @@ fn test_cv_maximize_mode_raises_mv() {
 
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
 
-    let result = controller.next_move(
-        &[40.0],
-        &[50.0],
-        &[50.0],
-        &[],
-        &[],
-        &[10.0],
-        &[90.0],
-        &[20.0],
-        &[80.0],
-        &[1.0],
-        &[0.0],
-        &[0.1],
-        true,
-    );
+    let result = controller.next_move(&[40.0],
+    &[50.0],
+    &[50.0],
+    &[],
+    &[50.0],
+    &[10.0],
+    &[90.0],
+    &[20.0],
+    &[80.0],
+    &[1.0],
+    &[0.0],
+    &[0.1]);
 
     assert_eq!(result.status, SolverStatus::Solved);
     assert!(result.next_move[0] > 0.0, "MV should increase in CV maximize mode");
@@ -217,23 +205,20 @@ fn test_cv_minimize_mode_lowers_mv() {
 
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
 
-    let result = controller.next_move(
-        &[60.0],
-        &[50.0],
-        &[50.0],
-        &[],
-        &[],
-        &[10.0],
-        &[90.0],
-        &[20.0],
-        &[80.0],
-        &[1.0],
-        &[0.0],
-        &[0.1],
-        true,
-    );
+    let result = controller.next_move(&[60.0],
+    &[50.0],
+    &[50.0],
+    &[],
+    &[50.0],
+    &[10.0],
+    &[90.0],
+    &[20.0],
+    &[80.0],
+    &[1.0],
+    &[0.0],
+    &[0.1]);
 
     assert_eq!(result.status, SolverStatus::Solved);
     assert!(result.next_move[0] < 0.0, "MV should decrease in CV minimize mode");
@@ -246,23 +231,20 @@ fn test_cv_zone_mode_inside_zone_holds_mv() {
 
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
 
-    let result = controller.next_move(
-        &[50.0],
-        &[50.0],
-        &[50.0],
-        &[],
-        &[],
-        &[10.0],
-        &[90.0],
-        &[40.0],
-        &[60.0],
-        &[1.0],
-        &[0.0],
-        &[0.1],
-        true,
-    );
+    let result = controller.next_move(&[50.0],
+    &[50.0],
+    &[50.0],
+    &[],
+    &[50.0],
+    &[10.0],
+    &[90.0],
+    &[40.0],
+    &[60.0],
+    &[1.0],
+    &[0.0],
+    &[0.1]);
 
     assert_eq!(result.status, SolverStatus::Solved);
     assert!(result.next_move[0].abs() < 1e-6, "MV should hold when CV is inside zone");
@@ -275,23 +257,20 @@ fn test_cv_zone_mode_above_zone_lowers_mv() {
 
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
 
-    let result = controller.next_move(
-        &[75.0],
-        &[50.0],
-        &[50.0],
-        &[],
-        &[],
-        &[10.0],
-        &[90.0],
-        &[40.0],
-        &[60.0],
-        &[1.0],
-        &[0.0],
-        &[0.1],
-        true,
-    );
+    let result = controller.next_move(&[75.0],
+    &[50.0],
+    &[50.0],
+    &[],
+    &[50.0],
+    &[10.0],
+    &[90.0],
+    &[40.0],
+    &[60.0],
+    &[1.0],
+    &[0.0],
+    &[0.1]);
 
     assert_eq!(result.status, SolverStatus::Solved);
     assert!(result.next_move[0] < 0.0, "MV should decrease when CV is above zone");
@@ -305,23 +284,20 @@ fn test_mv_maximize_mode_raises_mv() {
 
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
 
-    let result = controller.next_move(
-        &[50.0],
-        &[50.0],
-        &[50.0],
-        &[],
-        &[50.0],
-        &[10.0],
-        &[90.0],
-        &[20.0],
-        &[80.0],
-        &[0.0],
-        &[0.0],
-        &[0.1],
-        true,
-    );
+    let result = controller.next_move(&[50.0],
+    &[50.0],
+    &[50.0],
+    &[],
+    &[50.0],
+    &[10.0],
+    &[90.0],
+    &[20.0],
+    &[80.0],
+    &[0.0],
+    &[0.0],
+    &[0.1]);
 
     assert_eq!(result.status, SolverStatus::Solved);
     assert!(result.next_move[0] > 0.0, "MV should increase in maximize mode");
@@ -335,23 +311,20 @@ fn test_mv_minimize_mode_lowers_mv() {
 
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
 
-    let result = controller.next_move(
-        &[50.0],
-        &[50.0],
-        &[50.0],
-        &[],
-        &[50.0],
-        &[10.0],
-        &[90.0],
-        &[20.0],
-        &[80.0],
-        &[0.0],
-        &[0.0],
-        &[0.1],
-        true,
-    );
+    let result = controller.next_move(&[50.0],
+    &[50.0],
+    &[50.0],
+    &[],
+    &[50.0],
+    &[10.0],
+    &[90.0],
+    &[20.0],
+    &[80.0],
+    &[0.0],
+    &[0.0],
+    &[0.1]);
 
     assert_eq!(result.status, SolverStatus::Solved);
     assert!(result.next_move[0] < 0.0, "MV should decrease in minimize mode");
@@ -366,23 +339,20 @@ fn test_mv_target_mode_keeps_legacy_target_weight_behavior() {
 
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
 
-    let result = controller.next_move(
-        &[50.0],
-        &[50.0],
-        &[50.0],
-        &[],
-        &[70.0],
-        &[10.0],
-        &[90.0],
-        &[20.0],
-        &[80.0],
-        &[0.0],
-        &[0.0],
-        &[0.1],
-        true,
-    );
+    let result = controller.next_move(&[50.0],
+    &[50.0],
+    &[50.0],
+    &[],
+    &[70.0],
+    &[10.0],
+    &[90.0],
+    &[20.0],
+    &[80.0],
+    &[0.0],
+    &[0.0],
+    &[0.1]);
 
     assert_eq!(result.status, SolverStatus::Solved);
     assert!(result.next_move[0] > 0.0, "MV should increase toward explicit target in target mode");
@@ -402,23 +372,20 @@ fn test_cv_constraint_overrides_mv_maximize_strategy() {
 
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
 
-    let result = controller.next_move(
-        &[75.0],      // CV well above zone
-        &[50.0],
-        &[50.0],
-        &[],
-        &[50.0],
-        &[10.0],
-        &[90.0],
-        &[40.0],      // CV low zone
-        &[60.0],      // CV high zone
-        &[10.0],      // Strong CV priority
-        &[0.0],
-        &[0.1],
-        true,
-    );
+    let result = controller.next_move(&[75.0],      // CV well above zone
+    &[50.0],
+    &[50.0],
+    &[],
+    &[50.0],
+    &[10.0],
+    &[90.0],
+    &[40.0],      // CV low zone
+    &[60.0],      // CV high zone
+    &[10.0],      // Strong CV priority
+    &[0.0],
+    &[0.1]);
 
     assert_eq!(result.status, SolverStatus::Solved);
     assert!(
@@ -436,39 +403,33 @@ fn test_dynamic_mv_weight_changes_move_aggressiveness() {
 
     let step_coeffs = model.physics.step_coefficients.clone();
     let dv_coeffs = model.physics.dv_coefficients.clone();
-    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model);
+    let mut controller = DmcController::new_from_coefficients(step_coeffs, dv_coeffs, &model).unwrap();
 
-    let low_weight_result = controller.next_move(
-        &[50.0],
-        &[50.0],
-        &[50.0],
-        &[],
-        &[70.0],
-        &[10.0],
-        &[90.0],
-        &[20.0],
-        &[80.0],
-        &[0.0],
-        &[0.0],
-        &[0.01],      // very low move suppression
-        true,
-    );
+    let low_weight_result = controller.next_move(&[50.0],
+    &[50.0],
+    &[50.0],
+    &[],
+    &[70.0],
+    &[10.0],
+    &[90.0],
+    &[20.0],
+    &[80.0],
+    &[0.0],
+    &[0.0],
+    &[0.01],);
 
-    let high_weight_result = controller.next_move(
-        &[50.0],
-        &[50.0],
-        &[50.0],
-        &[],
-        &[70.0],
-        &[10.0],
-        &[90.0],
-        &[20.0],
-        &[80.0],
-        &[0.0],
-        &[0.0],
-        &[10.0],      // very high move suppression
-        true,
-    );
+    let high_weight_result = controller.next_move(&[50.0],
+    &[50.0],
+    &[50.0],
+    &[],
+    &[70.0],
+    &[10.0],
+    &[90.0],
+    &[20.0],
+    &[80.0],
+    &[0.0],
+    &[0.0],
+    &[10.0],);
 
     assert_eq!(low_weight_result.status, SolverStatus::Solved);
     assert_eq!(high_weight_result.status, SolverStatus::Solved);

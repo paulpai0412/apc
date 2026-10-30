@@ -71,6 +71,7 @@ impl Role {
                     | Permission::ModelDeploy
                     | Permission::ControllerLifecycle
                     | Permission::InfraWrite
+                    | Permission::ResearchManage
             ),
             Self::Admin => true,
         }
@@ -86,40 +87,16 @@ pub enum Permission {
     ModelDeploy,
     ControllerLifecycle,
     InfraWrite,
+    ResearchManage,
     UserManage,
     AuditRead,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeWriteKind {
-    Basic,
-    OperationalLimit,
-    SafetyLimit,
-}
-
-pub fn classify_runtime_write(node_id: &str) -> RuntimeWriteKind {
-    let lowered = node_id.to_ascii_lowercase();
-    if lowered.contains("lowlow")
-        || lowered.contains("highhigh")
-        || lowered.contains("lo_lo")
-        || lowered.contains("hi_hi")
-    {
-        return RuntimeWriteKind::SafetyLimit;
-    }
-
-    if lowered.contains("low") || lowered.contains("high") {
-        return RuntimeWriteKind::OperationalLimit;
-    }
-
-    RuntimeWriteKind::Basic
-}
-
-pub fn required_runtime_write_permission(node_id: &str) -> Permission {
-    match classify_runtime_write(node_id) {
-        RuntimeWriteKind::SafetyLimit => Permission::RuntimeWriteLimitsSafety,
-        RuntimeWriteKind::OperationalLimit => Permission::RuntimeWriteLimitsOperational,
-        RuntimeWriteKind::Basic => Permission::RuntimeWriteBasic,
-    }
+pub fn required_runtime_write_permission(
+    bindings: &crate::model_binding::RuntimeBindings,
+    node_id: &str,
+) -> Result<Permission, String> {
+    bindings.permission(node_id)
 }
 
 pub fn permission_audit_label(permission: Permission) -> &'static str {
@@ -131,6 +108,7 @@ pub fn permission_audit_label(permission: Permission) -> &'static str {
         Permission::ModelDeploy => "model:deploy",
         Permission::ControllerLifecycle => "controller:lifecycle",
         Permission::InfraWrite => "infra:write",
+        Permission::ResearchManage => "research:manage",
         Permission::UserManage => "user:manage",
         Permission::AuditRead => "audit:read",
     }
@@ -425,6 +403,23 @@ impl AuthService {
         )
         .await;
 
+        Ok(())
+    }
+    /// Disposable local harness only. Never updates an existing identity/database.
+    pub async fn ensure_local_test_admin(
+        &self, username: &str, password: &str, bind: std::net::SocketAddr, local_test_mode: bool,
+    ) -> Result<(), AuthError> {
+        if !local_test_mode || !bind.ip().is_loopback() || username.trim().is_empty() || password.is_empty() {
+            return Err(AuthError::Forbidden);
+        }
+        let hash = hash_password(password)?;
+        let inserted = sqlx::query(
+            "INSERT INTO users (username,password_hash,role,force_password_change) SELECT ?,?,'admin',0 WHERE NOT EXISTS (SELECT 1 FROM users)",
+        ).bind(username).bind(hash).execute(&self.pool).await.map_err(|_|AuthError::Internal)?;
+        if inserted.rows_affected() == 1 {
+            self.audit(None,"auth.local_test_bootstrap",Some(username),"success",
+                Some("Created a fresh loopback-only disposable test identity")).await;
+        }
         Ok(())
     }
 
@@ -941,51 +936,31 @@ pub fn shared(auth: AuthService) -> Arc<AuthService> {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_runtime_write, required_runtime_write_permission, Permission, Role, RuntimeWriteKind};
+    use super::{Permission, Role};
 
-    fn can_write_number(role: Role, node_id: &str) -> bool {
-        let permission = required_runtime_write_permission(node_id);
-        role.allows(permission)
+    #[test]
+    fn viewer_cannot_write_any_runtime_level() {
+        for permission in [Permission::RuntimeWriteBasic, Permission::RuntimeWriteLimitsOperational,
+            Permission::RuntimeWriteLimitsSafety, Permission::ModelDeploy] {
+            assert!(!Role::Viewer.allows(permission));
+        }
     }
 
     #[test]
-    fn runtime_write_classification_matches_limit_types() {
-        assert_eq!(classify_runtime_write("Reactor:SP"), RuntimeWriteKind::Basic);
-        assert_eq!(classify_runtime_write("Reactor:ModeTarget"), RuntimeWriteKind::Basic);
-        assert_eq!(classify_runtime_write("Reactor:LowLimit"), RuntimeWriteKind::OperationalLimit);
-        assert_eq!(classify_runtime_write("Reactor:HighLimit"), RuntimeWriteKind::OperationalLimit);
-        assert_eq!(classify_runtime_write("Reactor:LowLowLimit"), RuntimeWriteKind::SafetyLimit);
-        assert_eq!(classify_runtime_write("Reactor:HighHighLimit"), RuntimeWriteKind::SafetyLimit);
+    fn operator_can_request_control_and_operational_limits_but_not_safety_or_tuning() {
+        assert!(Role::Operator.allows(Permission::RuntimeWriteBasic));
+        assert!(Role::Operator.allows(Permission::RuntimeWriteLimitsOperational));
+        assert!(!Role::Operator.allows(Permission::RuntimeWriteLimitsSafety));
+        assert!(!Role::Operator.allows(Permission::ModelDeploy));
     }
 
     #[test]
-    fn runtime_write_permission_mapping_is_correct() {
-        assert_eq!(required_runtime_write_permission("Unit:SP"), Permission::RuntimeWriteBasic);
-        assert_eq!(required_runtime_write_permission("Unit:LowLimit"), Permission::RuntimeWriteLimitsOperational);
-        assert_eq!(required_runtime_write_permission("Unit:HighHighLimit"), Permission::RuntimeWriteLimitsSafety);
-    }
-
-    #[test]
-    fn viewer_cannot_write_setpoints_or_limits() {
-        assert!(!can_write_number(Role::Viewer, "Loop:SP"));
-        assert!(!can_write_number(Role::Viewer, "Loop:LowLimit"));
-        assert!(!can_write_number(Role::Viewer, "Loop:HighHighLimit"));
-    }
-
-    #[test]
-    fn operator_can_write_setpoints_and_operational_limits_but_not_safety_limits() {
-        assert!(can_write_number(Role::Operator, "Loop:SP"));
-        assert!(can_write_number(Role::Operator, "Loop:ModeTarget"));
-        assert!(can_write_number(Role::Operator, "Loop:LowLimit"));
-        assert!(!can_write_number(Role::Operator, "Loop:HighHighLimit"));
-    }
-
-    #[test]
-    fn engineer_and_admin_can_write_all_runtime_levels() {
+    fn engineer_and_admin_retain_legitimate_control_safety_and_tuning_permissions() {
         for role in [Role::Engineer, Role::Admin] {
-            assert!(can_write_number(role, "Loop:SP"));
-            assert!(can_write_number(role, "Loop:LowLimit"));
-            assert!(can_write_number(role, "Loop:LowLowLimit"));
+            for permission in [Permission::RuntimeWriteBasic, Permission::RuntimeWriteLimitsOperational,
+                Permission::RuntimeWriteLimitsSafety, Permission::ModelDeploy] {
+                assert!(role.allows(permission));
+            }
         }
     }
 }

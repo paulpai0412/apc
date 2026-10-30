@@ -1,3 +1,17 @@
+model_binding:
+  schema_version: 1
+  controller_name: "VP_Debutanizer"
+  sample_time: 10
+  prediction_horizon: 30
+  control_horizon: 20
+  cvs:
+    - {"name":"Top_C4","description":"Top Product C4 Composition","units":"fraction","node_ids":{"pv":"Top_C4:PV","target":"Top_C4:Target","prediction":"Top_C4:Prediction","limits":{"high":"Top_C4:HighLimit","low":"Top_C4:LowLimit","hh":"Top_C4:HighHighLimit","ll":"Top_C4:LowLowLimit"}}}
+    - {"name":"Btm_Temp","description":"Bottom Temperature","units":"°C","node_ids":{"pv":"Btm_Temp:PV","target":"Btm_Temp:Target","prediction":"Btm_Temp:Prediction","limits":{"high":"Btm_Temp:HighLimit","low":"Btm_Temp:LowLimit","hh":"Btm_Temp:HighHighLimit","ll":"Btm_Temp:LowLowLimit"}}}
+  mvs:
+    - {"name":"Reflux","description":"Reflux Flow Rate","units":"m3/h","node_ids":{"pv":"Reflux:PV","sp":"Reflux:SP","applied_sp":"Reflux:AppliedSP","op":"Reflux:OP","mode":"Reflux:Mode","mode_target":"Reflux:ModeTarget","future_plan":"Reflux:FuturePlan","limits":{"high":"Reflux:HighLimit","low":"Reflux:LowLimit","hh":"Reflux:HighHighLimit","ll":"Reflux:LowLowLimit"}}}
+    - {"name":"Steam","description":"Reboiler Steam Flow Rate","units":"m3/h","node_ids":{"pv":"Steam:PV","sp":"Steam:SP","applied_sp":"Steam:AppliedSP","op":"Steam:OP","mode":"Steam:Mode","mode_target":"Steam:ModeTarget","future_plan":"Steam:FuturePlan","limits":{"high":"Steam:HighLimit","low":"Steam:LowLimit","hh":"Steam:HighHighLimit","ll":"Steam:LowLowLimit"}}}
+  dvs:
+    - {"name":"Feed_Flow","description":"Column Feed Flow Rate","units":"m3/h","node_ids":{"pv":"Feed_Flow:AcquiredPV","limits":{"high":"Feed_Flow:HighLimit","low":"Feed_Flow:LowLimit"}}}
 nodes:
   # --- SYSTEM: VP_Debutanizer ---
   - nodeId: "VP_Debutanizer:ControlNodes"
@@ -28,16 +42,16 @@ nodes:
     nodeClass: "Variable"
     dataType: "Double"
     initialValue: 0
-  - nodeId: "VP_Debutanizer:ModelSelect"
+  - nodeId: "VP_Debutanizer:AcquisitionSequence"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 0
+    comment: "Simulator-owned odd/even complete-frame counter; static zero is not fresh"
+  - nodeId: "VP_Debutanizer:ControlObservation"
     nodeClass: "Variable"
     dataType: "String"
     initialValue: ""
-    comment: "Write model filename to trigger hot-swap (e.g., 'Batman_v2_model.json')"
-  - nodeId: "VP_Debutanizer:AvailableModels"
-    nodeClass: "Variable"
-    dataType: "StringArray"
-    initialValue: []
-    comment: "List of available model files in model directory"
+    comment: "Engine measured-performance JSON; advisory, not command authority"
   - nodeId: "VP_Debutanizer:ConfigurationStatus"
     nodeClass: "Variable"
     dataType: "String"
@@ -158,6 +172,10 @@ nodes:
   - nodeId: "Reflux:SP"
     nodeClass: "Variable"
     dataType: "Double"
+    initialValue: 100
+  - nodeId: "Reflux:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
     initialValue: 0
   - nodeId: "Reflux:OP"
     nodeClass: "Variable"
@@ -217,6 +235,10 @@ nodes:
   - nodeId: "Steam:SP"
     nodeClass: "Variable"
     dataType: "Double"
+    initialValue: 135
+  - nodeId: "Steam:AppliedSP"
+    nodeClass: "Variable"
+    dataType: "Double"
     initialValue: 0
   - nodeId: "Steam:OP"
     nodeClass: "Variable"
@@ -270,6 +292,10 @@ nodes:
     nodeClass: "Object"
     description: "Column Feed Flow Rate"
   - nodeId: "Feed_Flow:PV"
+    nodeClass: "Variable"
+    dataType: "Double"
+    initialValue: 150
+  - nodeId: "Feed_Flow:AcquiredPV"
     nodeClass: "Variable"
     dataType: "Double"
     initialValue: 0

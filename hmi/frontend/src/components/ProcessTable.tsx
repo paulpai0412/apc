@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { ValueEditorModal } from './ValueEditorModal';
 import { useTagStore } from '../store/tagStore';
 import { useWriteNode } from '../hooks/useWriteNode';
 import type { UserRole } from '../lib/api';
+import { runtimeNodeId } from '../lib/modelBinding';
+import type { RuntimeVariable } from '../lib/modelBinding';
 
 export interface ColumnDef {
     header: string;
@@ -11,8 +13,7 @@ export interface ColumnDef {
 
 interface ProcessTableProps {
   title: string;
-  rowHeaders: string[]; 
-  descriptions?: Record<string, string>;
+  rowHeaders: RuntimeVariable[];
   wsRef: React.RefObject<WebSocket | null>;
   columns: ColumnDef[];
     currentRole: UserRole;
@@ -25,14 +26,14 @@ interface EditingField {
     unit?: string;
 }
 
-export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, descriptions, wsRef, columns, currentRole }) => {
+export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, wsRef, columns, currentRole }) => {
   const tags = useTagStore(s => s.tags);
   const [editingField, setEditingField] = useState<EditingField | null>(null);
     const [deniedReason, setDeniedReason] = useState<string | null>(null);
 
     const canRoleEditSuffix = (role: UserRole, suffix: string): boolean => {
             if (role === 'admin' || role === 'engineer') return true;
-            if (role === 'operator') return suffix !== 'LowLowLimit' && suffix !== 'HighHighLimit';
+            if (role === 'operator') return ['Target', 'SP', 'ModeTarget', 'LowLimit', 'HighLimit'].includes(suffix);
             return false;
     };
 
@@ -56,37 +57,20 @@ export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, d
     }
   );
 
-  // ✅ DEBUGGING: Monitor Data Flow
-  useEffect(() => {
-    // Only run this check if we have rows and tags
-    if (rowHeaders.length > 0 && Object.keys(tags).length > 0) {
-        const firstRow = rowHeaders[0];
-        const firstCol = columns.find(c => c.suffix === "PV") || columns[0];
-        
-        const testKey = `${firstRow}:${firstCol.suffix}`;
-        const foundData = tags[testKey];
 
-        console.log(`🔍 [ProcessTable Debug] ${title}`);
-        console.log(`   👉 Row: "${firstRow}" | Suffix: "${firstCol.suffix}"`);
-        console.log(`   👉 Generated Key: "${testKey}"`);
-        console.log(`   👉 Data in 'tags' for this key:`, foundData);
-        console.log(`   👉 Available Keys in 'tags' (first 3):`, Object.keys(tags).slice(0, 3));
-    }
-  }, [tags, rowHeaders, title, columns]);
+  const EDITABLE_SUFFIXES = ["Target", "SP", "ModeTarget", "LowLimit", "HighLimit", "LowLowLimit", "HighHighLimit", "Weight", "Alpha"];
 
-  const EDITABLE_SUFFIXES = ["Target", "SP", "LowLimit", "HighLimit", "LowLowLimit", "HighHighLimit"];
-
-  const handleFieldClick = (row: string, colSuffix: string, currentVal: any) => {
-      if (EDITABLE_SUFFIXES.includes(colSuffix)) {
+  const handleFieldClick = (row: RuntimeVariable, colSuffix: string, currentVal: unknown) => {
+      const nodeId = runtimeNodeId(row, colSuffix);
+      if (nodeId && typeof currentVal === 'number' && Number.isFinite(currentVal) && EDITABLE_SUFFIXES.includes(colSuffix)) {
           const denyReason = deniedReasonForRole(currentRole, colSuffix);
-          const nodeId = `${row}:${colSuffix}`;
-          const friendlyName = `${row} ${colSuffix}`;
+          const friendlyName = `${row.name} ${colSuffix}`;
           setDeniedReason(denyReason);
           setEditingField({
               nodeId,
               title: friendlyName,
               currentValue: String(currentVal),
-              unit: undefined
+              unit: ['Weight', 'Alpha', 'ModeTarget'].includes(colSuffix) ? undefined : row.units || 'Units unknown'
           });
       }
   };
@@ -100,48 +84,50 @@ export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, d
         </span>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs table-fixed">
+      <div className="overflow-x-auto" tabIndex={0} role="region" aria-label={`${title}；可橫向捲動查看各欄位`}>
+        <table className="w-full min-w-max text-left text-xs">
           <thead>
             <tr className="border-b-2 border-slate-700 bg-slate-900/60 text-slate-300">
               <th className="px-3 py-2 font-extrabold uppercase tracking-wider text-[13px] w-24">Tag</th>
               {columns.map(c => (
-                  <th key={c.header} className="px-2 py-2 font-extrabold uppercase tracking-wider text-right text-[13px]">{c.header}</th>
+                  <th key={c.header} className={`px-2 py-2 font-extrabold uppercase tracking-wider text-right text-[13px] ${c.suffix === 'Description' ? 'hidden xl:table-cell' : ''}`}>{c.header}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/50">
             {rowHeaders.map((rowTag) => (
-              <tr key={rowTag} className="hover:bg-slate-800/40 transition-colors group">
-                <td className="px-3 py-1 font-mono text-[11px] text-slate-400 group-hover:text-indigo-300 transition-colors truncate">
-                    {rowTag}
+              <tr key={rowTag.name} className="hover:bg-slate-800/40 transition-colors group">
+                <td className="px-3 py-1 font-mono text-[11px] text-slate-400 group-hover:text-indigo-300 transition-colors truncate" title={rowTag.description}>
+                    {rowTag.name}<span className="block text-slate-500">{rowTag.units || 'Units unknown'}</span>
                 </td>
 
                 {columns.map((col) => {
-                    const nodeId = `${rowTag}:${col.suffix}`;
-                    const tagData = tags[nodeId];
+                    const nodeId = runtimeNodeId(rowTag, col.suffix);
+                    const tagData = nodeId ? tags[nodeId] : undefined;
+                    const value = (field: string) => {
+                        const id = runtimeNodeId(rowTag, field);
+                        const tag = id ? tags[id] : undefined;
+                        return tag && Number.isInteger(tag.status) && tag.status >= 0 && tag.status <= 0xffffffff && (tag.status >>> 30) === 0
+                            && typeof tag.value === 'number' && Number.isFinite(tag.value) ? tag.value : undefined;
+                    };
                     
                     // Special handling for non-OPC columns
-                    let val: any;
+                    let val: number | string | undefined;
                     let displayText: string;
                     
                     if (col.suffix === "Description") {
-                        // Description comes from YAML config
-                        val = descriptions?.[rowTag] || "-";
-                        displayText = descriptions?.[rowTag] || "-";
+                        val = rowTag.description || "-";
+                        displayText = val;
                     } else if (col.suffix === "Status") {
-                        // Status logic depends on variable type
-                        const pv = tags[`${rowTag}:PV`]?.value as number;
-                        const mode = tags[`${rowTag}:Mode`]?.value as number;
-                        
-                        // Check if this is an MV (has Mode node)
-                        if (mode !== undefined) {
-                            // MV Status based on control mode
+                        const pv = value('PV');
+                        const mode = value('Mode');
+                        if (rowTag.role === 'MV') {
+                            // PID mode is not proof that an engine command was accepted.
                             // 0 = Operator Control, 1 = Local Auto, 2 = Cascade, 3 = Remote Cascade
                             switch (mode) {
                                 case 3:
-                                    val = "MPC Control";
-                                    displayText = "MPC Control";
+                                    val = "Remote Cascade";
+                                    displayText = "Remote Cascade";
                                     break;
                                 case 2:
                                     val = "DCS Cascade";
@@ -160,12 +146,11 @@ export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, d
                                     displayText = "Unknown Mode";
                             }
                         } else {
-                            // CV Status based on alarm limits
-                            const target = tags[`${rowTag}:Target`]?.value as number;
-                            const low = tags[`${rowTag}:LowLimit`]?.value as number;
-                            const high = tags[`${rowTag}:HighLimit`]?.value as number;
-                            const lowlow = tags[`${rowTag}:LowLowLimit`]?.value as number;
-                            const highhigh = tags[`${rowTag}:HighHighLimit`]?.value as number;
+                            const target = value('Target');
+                            const low = value('LowLimit');
+                            const high = value('HighLimit');
+                            const lowlow = value('LowLowLimit');
+                            const highhigh = value('HighHighLimit');
                             
                             if (pv !== undefined && low !== undefined && high !== undefined) {
                                 if (lowlow !== undefined && pv <= lowlow) {
@@ -193,25 +178,22 @@ export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, d
                             }
                         }
                     } else {
-                        // Regular OPC UA node
-                        val = tagData ? tagData.value : "-";
-                        displayText = typeof val === 'number' ? val.toFixed(2) : String(val);
+                        val = value(col.suffix);
+                        displayText = val === undefined ? (nodeId ? 'Unavailable' : 'Not configured') : val.toFixed(2);
                     }
                     
-                    const isEditableCol = EDITABLE_SUFFIXES.includes(col.suffix);
+                    const isEditableCol = Boolean(nodeId && tagData && typeof val === 'number' && EDITABLE_SUFFIXES.includes(col.suffix));
                     
                     // --- Constraint Logic ---
                     // Fetch limits even if they are not columns for this table
-                    const highLimTag = tags[`${rowTag}:HighLimit`];
-                    const lowLimTag = tags[`${rowTag}:LowLimit`];
-                    const highLim = highLimTag && typeof highLimTag.value === 'number' ? highLimTag.value : undefined;
-                    const lowLim = lowLimTag && typeof lowLimTag.value === 'number' ? lowLimTag.value : undefined;
+                    const highLim = value('HighLimit');
+                    const lowLim = value('LowLimit');
 
                     let constraintStyle = "";
-                    let valNum = typeof val === 'number' ? val : parseFloat(String(val));
+                    const valNum = typeof val === 'number' ? val : parseFloat(String(val));
                     
-                    // Highlighting for PV and OP
-                    if ((col.suffix === "PV" || col.suffix === "OP") && !isNaN(valNum)) {
+                    // PV limits do not describe the independent PID output quantity.
+                    if (col.suffix === "PV" && !isNaN(valNum)) {
                         if (highLim !== undefined && valNum >= highLim) {
                              constraintStyle = "bg-amber-900/40 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-black border border-amber-500/30 rounded px-1";
                         } else if (lowLim !== undefined && valNum <= lowLim) {
@@ -220,7 +202,7 @@ export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, d
                     }
 
                     return (
-                        <td key={col.header} className="px-2 py-1 text-right text-xs">
+                        <td key={col.header} className={`px-2 py-1 text-right text-xs ${col.suffix === 'Description' ? 'hidden xl:table-cell' : ''}`}>
                             <span 
                                 onClick={() => isEditableCol && handleFieldClick(rowTag, col.suffix, val)}
                                 className={`
@@ -231,7 +213,7 @@ export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, d
                                     ${!constraintStyle && col.suffix !== "PV" && col.suffix !== "OP" ? 'font-mono text-slate-300' : ''}
                                     ${col.suffix === "Status" ? (() => {
                                         // MV Status Colors
-                                        if (displayText === "MPC Control") return 'text-emerald-400 font-bold text-[11px] uppercase tracking-wide';
+                                        if (displayText === "Remote Cascade") return 'text-emerald-400 font-bold text-[11px] uppercase tracking-wide';
                                         if (displayText === "DCS Cascade") return 'text-blue-400 font-semibold text-[11px] uppercase tracking-wide';
                                         if (displayText === "Local Auto") return 'text-yellow-400 font-semibold text-[11px] uppercase tracking-wide';
                                         if (displayText === "Operator") return 'text-orange-400 font-semibold text-[11px] uppercase tracking-wide';
@@ -244,7 +226,7 @@ export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, d
                                         if (displayText === "Normal") return 'text-slate-400 font-normal text-[11px] uppercase';
                                         return 'text-slate-500 font-normal text-[11px] uppercase';
                                     })() : ''}
-                                    ${col.suffix === "Description" ? 'text-slate-400 text-[11px] font-normal' : ''}
+                                    ${col.suffix === "Description" ? 'max-w-48 whitespace-normal text-slate-400 text-[11px] font-normal' : ''}
                                 `}
                             >
                                 {displayText}
@@ -265,6 +247,7 @@ export const ProcessTable: React.FC<ProcessTableProps> = ({ title, rowHeaders, d
                     setDeniedReason(null);
                 }}
         title={editingField?.title || ""}
+        unit={editingField?.unit}
         currentValue={editingField?.currentValue ? parseFloat(editingField.currentValue) : 0}
         onConfirm={write}
         isWriting={isWriting}

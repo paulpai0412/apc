@@ -1,8 +1,9 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useTagStore } from '../store/tagStore';
+import { writeOpcNode } from '../lib/opcWrite';
 
 interface WriteNodeOptions {
-  timeout?: number; // milliseconds, default 3000
+  timeout?: number;
   onSuccess?: () => void;
   onError?: (error: Error) => void;
 }
@@ -12,68 +13,30 @@ export const useWriteNode = (
   wsRef: React.RefObject<WebSocket | null>,
   options: WriteNodeOptions = {}
 ) => {
-  const { timeout = 3000, onSuccess, onError } = options;
-  const { setPending, clearPending, isPending } = useTagStore();
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  
+  const { timeout = 10000, onSuccess, onError } = options;
   const isWriting = useTagStore(state => state.pendingWrites.has(nodeId));
-  
-  const write = useCallback((value: number | string | boolean) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      const error = new Error('WebSocket not connected');
-      onError?.(error);
-      return;
-    }
-    
-    // Mark as pending
-    setPending(nodeId);
-    
-    // Send write command
-    const payload = {
-      type: "WRITE",
-      nodeId: nodeId,
-      value: typeof value === 'number' ? Number(value) : value
-    };
-    
-    wsRef.current.send(JSON.stringify(payload));
-    
-    // Set timeout for write acknowledgment
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-    
-    timeoutRef.current = setTimeout(() => {
-      if (isPending(nodeId)) {
-        clearPending(nodeId);
-        const error = new Error(`Write timeout for ${nodeId}`);
-        console.error('⏱️ Write Timeout:', nodeId);
-        onError?.(error);
+  const activeNode = useRef(nodeId);
+  const mounted = useRef(true);
+  activeNode.current = nodeId;
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  const write = useCallback(async (value: number | string | boolean) => {
+    try {
+      // The stream is needed for observing the result, not for acknowledging the request.
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        throw new Error('觀測連線尚未建立；不發送寫入。');
       }
-    }, timeout);
-    
-    // Success handler (called when tag updates and pending is cleared)
-    // This is handled automatically by the store's updateTag action
-    const checkInterval = setInterval(() => {
-      if (!isPending(nodeId)) {
-        clearInterval(checkInterval);
-        if (timeoutRef.current) {
-          clearTimeout(timeoutRef.current);
-          timeoutRef.current = null;
-        }
-        console.log('✅ Write Acknowledged:', nodeId);
-        onSuccess?.();
-      }
-    }, 100);
-    
-    // Cleanup check after timeout + 500ms
-    setTimeout(() => {
-      clearInterval(checkInterval);
-    }, timeout + 500);
-    
-  }, [nodeId, wsRef, setPending, clearPending, isPending, timeout, onSuccess, onError]);
-  
-  return {
-    isWriting,
-    write
-  };
+      await writeOpcNode(nodeId, value, timeout);
+      if (mounted.current && activeNode.current === nodeId) onSuccess?.();
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error('寫入未確認。');
+      useTagStore.getState().setWriteError(error.message);
+      if (mounted.current && activeNode.current === nodeId) onError?.(error);
+    }
+  }, [nodeId, wsRef, timeout, onSuccess, onError]);
+
+  return { isWriting, write };
 };

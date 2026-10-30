@@ -12,6 +12,7 @@ pub struct AppSettings {
     pub debutanizer: DebutanizerConfig,
     pub cstr: CstrConfig,
     pub paths: PathConfig,
+    pub acquisition: AcquisitionConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -20,6 +21,14 @@ pub struct OpcuaConfig {
     pub security_policy: String,
     pub message_mode: String,
     pub namespace_index: u16,
+}
+
+/// Required producer bindings: namespace-2 String IDs, never inferred from heartbeat.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AcquisitionConfig {
+    pub debutanizer: String,
+    pub cstr: String,
+    pub pass_balancing: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -76,6 +85,24 @@ impl AppSettings {
     pub fn load(path: &str) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .context("Failed to read settings.toml")?;
-        toml::from_str(&content).context("Failed to parse TOML")
+        let settings: Self = toml::from_str(&content)
+            .context("Failed to parse TOML (all three acquisition node IDs are required)")?;
+        anyhow::ensure!(settings.opcua.namespace_index == 2,
+            "Simulator acquisition requires OPC UA namespace 2");
+        let nodes = [
+            settings.acquisition.debutanizer.as_str(),
+            settings.acquisition.cstr.as_str(),
+            settings.acquisition.pass_balancing.as_str(),
+        ];
+        for (i, node) in nodes.iter().enumerate() {
+            anyhow::ensure!(
+                node.trim() == *node
+                    && node.strip_suffix(":AcquisitionSequence").is_some_and(|id| !id.is_empty()),
+                "acquisition node must be a nonempty controller String ID ending in :AcquisitionSequence"
+            );
+            anyhow::ensure!(!nodes[..i].contains(node), "acquisition node IDs must be distinct");
+        }
+        anyhow::ensure!(settings.runtime.speed_multiplier > 0, "speed_multiplier must be positive");
+        Ok(settings)
     }
 }

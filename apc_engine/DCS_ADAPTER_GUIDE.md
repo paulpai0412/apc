@@ -54,8 +54,33 @@ Scan 3+: Normal operation
 
 ---
 
-## OPC DA to OPC UA Bridge (Placeholder)
+## OPC DA / ABB integration
 
-If your DCS does not include an OPC UA client (or licensing is costly), an OPC DA → OPC UA bridge can be used to expose tags over OPC UA.
+The production engine remains an OPC UA **client**. An ABB installation exposing
+only OPC DA needs a separately validated DA-to-UA gateway or production Windows
+adapter. This repository now includes an isolated native synchronous COM DA
+server/client in [`opc_da_simulator/`](../opc_da_simulator/README.md) and a
+`mpc_campaign` transport adapter for the synthetic closed-loop evaluation.
+That local COM profile is not a remote DCOM service, ABB emulator, or permission
+to connect the production engine directly to ABB DA.
 
-Placeholder repo link: <ADD-OPCDA-OPCUA-BRIDGE-REPO-URL>
+The campaign keeps command SP and actual actuator feedback separate. Its learned
+SP-to-CV model uses command readback as the controller input coordinate; actual
+actuator dynamics remain in the independent simulated plant. The original
+production OP/SP mapping below still requires commissioning.
+
+Confirm the actual ABB controller/system version, installed server options,
+licenses, readable/writable tags, quality and timestamp mapping, update rate,
+and native mode values. The generic 0–3 modes above are not ABB native constants.
+Do not infer writable UA support from the ABB name or a version number alone.
+
+**Engineering-unit gate:** the current engine reads `node_ids.op` as current MV
+and writes `current MV + delta` to `node_ids.sp`; the bumpless path likewise copies
+OP to SP. A real PID OP (valve %) and SP (flow/temperature units) are not generally
+interchangeable. Establish a consistent manipulated-coordinate mapping before
+any plant writes. An ideal simulator with OP=SP does not validate this mapping.
+
+See [historical MPC validation design](../DIGITAL_TWIN_VALIDATION.md) for the
+separate mathematical, OPC, shadow-mode and authorized commissioning gates.
+Primary references: [ABB AC 800M OPC Server](https://library.e.abb.com/public/01118fad328ee7b3c1257dc00039f23e/3BSE035983-600_-_en_AC_800M_6.0_OPC_Server.pdf)
+and [Unified Automation UaGateway](https://documentation.unified-automation.com/uagateway/1.6.1/html/index.html).

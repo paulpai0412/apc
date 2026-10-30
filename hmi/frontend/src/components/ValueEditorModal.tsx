@@ -23,30 +23,31 @@ export const ValueEditorModal: React.FC<ValueEditorModalProps> = ({
   onCancel
 }) => {
   const [inputValue, setInputValue] = useState<string>("");
-  const initialValueRef = useRef<number | string>(currentValue);
+  const [initialValue, setInitialValue] = useState(currentValue);
+  const [wasOpen, setWasOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // CRUCIAL FIX: Only sync input on initial open, NOT on background updates
+  // Capture once per opening; live telemetry must not replace the operator's draft.
+  if (wasOpen !== isOpen) {
+    setWasOpen(isOpen);
+    if (isOpen) {
+      setInputValue(String(currentValue));
+      setInitialValue(currentValue);
+    }
+  }
   useEffect(() => {
     if (isOpen) {
-      const value = typeof currentValue === 'number' ? currentValue.toFixed(2) : String(currentValue);
-      setInputValue(value);
-      initialValueRef.current = currentValue;
-
-      // Focus and select text so typing replaces the current value immediately.
-      setTimeout(() => {
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }, 0);
+      inputRef.current?.focus();
+      inputRef.current?.select();
     }
-  }, [isOpen]); // Removed currentValue from deps - only runs on open/close
+  }, [isOpen]);
 
   const handleConfirm = () => {
     if (deniedReason) {
       return;
     }
-    const numValue = parseFloat(inputValue);
-    if (!isNaN(numValue) && !isWriting) {
+    const numValue = inputValue.trim() === '' ? NaN : Number(inputValue);
+    if (Number.isFinite(numValue) && !isWriting) {
       onConfirm(numValue);
       // Don't close here! Parent will close when write succeeds
     }
@@ -106,7 +107,7 @@ export const ValueEditorModal: React.FC<ValueEditorModalProps> = ({
             <div className="flex justify-between text-xs">
               <span className="text-slate-500">Current:</span>
               <span className="text-cyan-400 font-semibold">
-                {typeof initialValueRef.current === 'number' ? initialValueRef.current.toFixed(2) : initialValueRef.current} {unit}
+                {typeof initialValue === 'number' ? initialValue.toFixed(2) : initialValue} {unit}
               </span>
             </div>
           </div>
