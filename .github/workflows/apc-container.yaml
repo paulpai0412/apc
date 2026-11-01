@@ -32,6 +32,21 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Real HMI and isolated COM smoke
         run: deploy/docker/smoke.sh apc:acceptance
+      - name: Install pinned browser test tool (runner only)
+        run: |
+          npm install --prefix "$RUNNER_TEMP/apc-browser" --ignore-scripts --no-audit --no-fund playwright@1.64.1
+          "$RUNNER_TEMP/apc-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Actual desktop and mobile browser login
+        env:
+          APC_IMAGE: apc:acceptance
+        run: |
+          cleanup() {
+            docker compose -p apc-browser -f deploy/docker/compose.yaml logs > container-evidence/browser-container.log 2>&1 || true
+            docker compose -p apc-browser -f deploy/docker/compose.yaml down -v || true
+          }
+          trap cleanup EXIT
+          docker compose -p apc-browser -f deploy/docker/compose.yaml up -d --no-build --wait --wait-timeout 300
+          APC_PLAYWRIGHT_MODULE="$RUNNER_TEMP/apc-browser/node_modules/playwright/index.mjs" node deploy/tests/browser-smoke.mjs
       - name: Authenticate to GHCR using this job's token
         if: github.event_name == 'push'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3

@@ -56,6 +56,12 @@ assert request('/api/auth/me')[0]['authenticated'] is True
 bootstrap = request('/api/research')[0]
 assert bootstrap['enabled'] is True and bootstrap['schema_version'] == 1
 assert len(bootstrap['capabilities']['methods']) == 2
+workspace = request('/api/workspace')[0]
+assert workspace['deployment_kind'] == 'isolated_research'
+assert workspace['runtime_enabled'] is False and workspace['research_enabled'] is True
+assert workspace['capabilities']['automatic_handoff'] is False
+assert workspace['capabilities']['engine_lifecycle'] is False
+assert request('/api/runtime/profiles')[0]['profiles'] == []
 # Round-trip actual artifact storage; restart must retain its immutable identity.
 marker = Path('/data/research/acceptance-draft-id')
 if '--after-restart' in sys.argv:

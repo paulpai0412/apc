@@ -13,7 +13,8 @@ and license files remain under `/usr/share/doc`; simulator license is in `/app/c
 Only GitHub Actions builds. `APC ARM64 container` uses the native
 `ubuntu-24.04-arm` runner, tests both Rust crates, the frontend and Python, then
 runs the real HMI and COM acceptance with no network, no capabilities and a
-read-only root filesystem. A failing build or acceptance does not publish an
+read-only root filesystem. A second isolated Compose instance checks actual
+desktop/mobile browser login, without intercepting API responses. A failing build or acceptance does not publish an
 image. The push job publishes `ghcr.io/paulpai0412/apc:sha-<source SHA>`, pulls its
 immutable digest and repeats acceptance before producing `image-contract.json`
 and `container-evidence` as workflow artifacts. PR checks build/test without
@@ -58,7 +59,10 @@ browser deployment. Host-loopback/SSH forwarding does not by itself establish
 HTTPS on a remote hostname. A future HTTPS endpoint requires its own approved
 certificate/access configuration. No test bypass account is enabled in this
 image. The CI API client explicitly forwards its own cookie on container
-loopback; that check does not claim browser TLS validation.
+loopback. The separate Chromium check uses actual browser cookies at
+`http://localhost:18082`, verifies first password change and desktop/mobile login,
+and saves screenshots. This validates the localhost browser path; it does not
+claim HTTPS, external-host browser access or Safari/iOS validation.
 
 ## What is functional and what is absent
 

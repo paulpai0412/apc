@@ -12,6 +12,8 @@ print(json.dumps({
     "real_device_control": False,
     "com_tests": "passed",
     "hmi_authenticated_smoke": "passed",
+    "desktop_mobile_browser_smoke": "passed",
+    "field_runtime_entrance": "disabled by existing isolated-research contract",
     "volume": "apc_apc-data:/data",
     "host_binding": "127.0.0.1:18082",
     "transport": "Windows x64 COM simulator under Hangover 11.16 / FEX",
