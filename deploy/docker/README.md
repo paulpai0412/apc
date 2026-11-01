@@ -71,12 +71,14 @@ read/write counters. This is packaging acceptance, **not** the full three-month
 `validation/verify_autoresearch.py` qualification or factory commissioning.
 
 Runtime's overview, equipment/3D and historical trend UI remain in the same
-application. This isolated deployment has no commissioned equipment, real-time
-telemetry or QuestDB history. Empty/disconnected state is expected; it does not
-fabricate live equipment, old curves, connected status or accepted control.
+application source. The existing backend contract reports `runtime_enabled=false`
+when research is enabled, so this isolated configuration disables the field
+Runtime entrance. This is deliberate separation, not a claim that field Runtime
+is deployed. It has no commissioned equipment, live telemetry or QuestDB history;
+it does not fabricate devices, old curves, connected status or accepted control.
 Users can import research history and use isolated research/twin artifacts.
-Live historian/OPC capabilities need a separately commissioned deployment, not a
-change to this container's defaults.
+Field Runtime and live historian/OPC require their existing separately commissioned
+configuration. This packaging does not change that API or safety boundary.
 
 ## Persistence, health and recovery
 
