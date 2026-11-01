@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Campaign, Dataset, EngineeringVariable, ResearchBootstrap, ResearchSettings, ResearchValue, Study } from '../types/Research';
 import { ResearchField, ResearchNumber, ResearchPanel, researchButton, researchControl } from './ResearchControls';
 import { ResearchObjectiveControls } from './ResearchObjectiveControls';
@@ -22,6 +23,10 @@ function EngineeringFields({ value, onChange, path }: { value: ResearchValue; on
 
 
 export function ResearchStudy({ study, datasets, capabilities, section, onChange, onSelectDataset }: { study: Study; datasets: Dataset[]; capabilities: ResearchBootstrap['capabilities']; section: 'engineering' | 'tuning'; onChange: (study: Study) => void; onSelectDataset: (id: string) => void }) {
+  const [selection, setSelection] = useState('');
+  const [fieldError, setFieldError] = useState('');
+  const rows = (['cv', 'mv', 'dv'] as const).flatMap(role => study.config.variables[role].map((variable, index) => ({ role, index, variable, key: `${role}:${index}` })));
+  const selected = rows.find(row => row.key === selection);
   const updateResearch = (patch: Partial<ResearchSettings>) => onChange({ ...study, research: { ...study.research, ...patch } as ResearchSettings });
   const updateConfig = (patch: Partial<Campaign>) => onChange({ ...study, model_id: undefined, config: { ...study.config, ...patch } as Campaign });
   const updateVariable = (role: 'cv' | 'mv' | 'dv', index: number, patch: Partial<EngineeringVariable>) => {
@@ -40,7 +45,17 @@ export function ResearchStudy({ study, datasets, capabilities, section, onChange
   const minimumTrials = study.research.methods.length * (1 + 2 * study.research.rounds);
   if (!study.research.objective || !study.config.plant_source) return <ResearchPanel title="3 · 舊版研究"><p className="text-sm text-amber-200">既有快照與結果保留不變。請用上方「建立新研究」重新設定資料來源、降變異門檻與多情境驗證。</p></ResearchPanel>;
   return <ResearchPanel title={section === 'engineering' ? '工程契約與研究版本' : '固定目標與有界 MPC 搜尋'}>
-    <div className="space-y-6">
+    <div className="space-y-6" onInvalidCapture={event => {
+      event.preventDefault();
+      const input = event.target as HTMLInputElement;
+      setFieldError(`${input.closest('label')?.querySelector('span')?.textContent || '工程欄位'}：${input.validationMessage}`);
+      const editor = input.closest<HTMLElement>('[data-variable-editor]');
+      if (editor?.dataset.variableEditor) setSelection(editor.dataset.variableEditor);
+      let ancestor = input.parentElement;
+      while (ancestor) { if (ancestor instanceof HTMLDetailsElement) ancestor.open = true; ancestor = ancestor.parentElement; }
+      requestAnimationFrame(() => { input.focus(); input.scrollIntoView({ block: 'center', behavior: 'smooth' }); });
+    }} onChangeCapture={() => setFieldError('')}>
+      {fieldError && <p role="alert" className="text-sm text-rose-200">{fieldError}</p>}
       <fieldset hidden={section !== 'engineering'} disabled={section !== 'engineering'} className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2">
         <ResearchField label="研究名稱"><input required maxLength={120} className={researchControl} value={study.name} onChange={event => onChange({ ...study, name: event.target.value })} /></ResearchField>
@@ -68,26 +83,26 @@ export function ResearchStudy({ study, datasets, capabilities, section, onChange
       {study.research.methods.includes('soft_band') && <fieldset className="space-y-3"><legend className="mb-2 font-medium">Soft-band 品質帶（獨立於操作限制）</legend><p className="text-sm text-slate-400">品質帶以各 CV 目標為中心；採 Target 追蹤模式。操作限制與 MV 硬限制保持獨立。</p>{study.config.variables.cv.map((variable, index) => { const band = objectValue(bands[index]); return <div key={index} className="rounded-lg border border-indigo-900 p-4"><h3 className="mb-3 text-sm text-indigo-300">{variable.name} ({variable.unit})</h3><div className="grid gap-3 sm:grid-cols-3">{(['half_width', 'tracking_scale', 'quadratic_penalty'] as const).map(key => <ResearchNumber key={key} label={`${variable.name} ${{ half_width: '品質帶半寬', tracking_scale: '帶內追蹤倍率', quadratic_penalty: '品質 slack 二次懲罰' }[key]}`} value={typeof band[key] === 'number' ? band[key] : undefined} min={0.000001} max={key === 'tracking_scale' ? 1 : undefined} onChange={next => updateResearch({ bands: study.config.variables.cv.map((_, i) => i === index ? { ...objectValue(bands[i]), [key]: next ?? NaN } : objectValue(bands[i])) })} />)}</div></div>; })}</fieldset>}
       </fieldset>
       <fieldset hidden={section !== 'engineering'} disabled={section !== 'engineering'} className="space-y-4">
-      <fieldset className="space-y-3"><legend className="mb-2 font-medium">CV 品質規格（選填 · 圖表與評估共用）</legend>
-        <p className="text-sm text-slate-400">設定後會評估規格超限時間與代價，但不取代控制器操作界線或 Soft-band。留空表示未評估規格合格率。</p>
-        {study.config.variables.cv.map((variable, index) => <div key={index} className="rounded-lg border border-slate-700 p-3"><h3 className="mb-3 text-sm">{variable.name} ({variable.unit || '單位未知'})</h3><div className="grid gap-3 sm:grid-cols-2">
-          <ResearchNumber label={`${variable.name} 品質規格下限（空白 = 未設定）`} required={false} value={variable.spec_low} onChange={spec_low => updateVariable('cv', index, { spec_low })} />
-          <ResearchNumber label={`${variable.name} 品質規格上限（空白 = 未設定）`} required={false} value={variable.spec_high} onChange={spec_high => updateVariable('cv', index, { spec_high })} />
-        </div></div>)}
-      </fieldset>
-      <details open><summary className="cursor-pointer font-medium text-indigo-300">工程設定 · CV / MV / DV</summary>
+      <section aria-label="工程變數總表" className="space-y-4">
+        <div><h3 className="font-semibold">工程變數總表</h3><p className="mt-1 text-sm text-slate-400">先選取一項再編輯。必填：名稱、單位、操作上下限與既有控制參數；選填項目另有標示。變更後須重新確認工程資格。</p></div>
+        <div className="overflow-x-auto"><table className="engineering-table w-full text-left text-sm"><thead><tr>{['角色／變數', '單位', '操作範圍', '硬界線', '編輯'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead><tbody>
+          {rows.map(({ role, variable, key }) => <tr key={key} aria-selected={selection === key}><td><strong>{role.toUpperCase()}</strong> · {variable.name || '名稱未填'}</td><td>{variable.unit || '未填'}</td><td>{Number.isFinite(variable.low) ? variable.low : '未填'} ～ {Number.isFinite(variable.high) ? variable.high : '未填'}</td><td>{variable.hard_low ?? '未設定'} ～ {variable.hard_high ?? '未設定'}</td><td><button type="button" className={researchButton} aria-pressed={selection === key} aria-label={`編輯 ${role.toUpperCase()} ${variable.name}`} onClick={() => setSelection(key)}>編輯</button></td></tr>)}
+        </tbody></table></div>
+        {!selected && <p className="border-l-2 border-indigo-500 py-3 pl-4 text-sm text-slate-300">選取上表一個變數，查看目標、界線與工程契約。</p>}
         <p className="my-3 text-xs text-slate-400">操作限、產品規格與硬限分開。硬限留白時，離線研究沿用操作上下限；這不構成現場安全包絡核准。精確物理映射與安全包絡仍由 Runtime profile 擁有。</p>
         {study.dataset_id && <p className="my-3 text-sm text-amber-200">初始界線與目標來自訓練期觀測，只是待審草稿。請填入實際操作許可值；訊號名稱與單位若需改動，請回清理階段建立新版本。</p>}
-        <div className="mt-4 space-y-4">{(['cv', 'mv', 'dv'] as const).map(role => <div key={role}><h3 className="mb-2 font-semibold uppercase text-slate-300">{role}</h3><div className="space-y-3">{study.config.variables[role].map((variable, index) => <fieldset key={index} className="min-w-0 rounded-lg border border-slate-700 p-4"><legend className="px-2 text-sm">{variable.name}</legend><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-4 space-y-4">{rows.map(({ role, index, variable, key }) => <fieldset key={key} data-variable-editor={key} hidden={selection !== key} className="min-w-0 border border-slate-700 p-4"><legend className="px-2 text-base font-medium">{role.toUpperCase()} · {variable.name} · 單項編輯</legend><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <ResearchField label={`${role.toUpperCase()} ${index + 1} 名稱`}><input required readOnly={!!study.dataset_id} className={researchControl} value={variable.name} onChange={event => updateVariable(role, index, { name: event.target.value })} /></ResearchField>
           <ResearchField label={`${role.toUpperCase()} ${index + 1} 單位`}><input required readOnly={!!study.dataset_id} className={researchControl} value={variable.unit} onChange={event => updateVariable(role, index, { unit: event.target.value })} /></ResearchField>
-          {Object.entries(variable).filter(([key, value]) => typeof value === 'number' && !['spec_low', 'spec_high', 'hard_low', 'hard_high', 'measurement_delay_seconds'].includes(key)).map(([key, value]) => <ResearchNumber key={key} label={`${variable.name} ${variableLabels[key] || key}`} value={value as number} min={['weight', 'slack_weight', 'max_move', 'weight_r'].includes(key) ? 0.000001 : key === 'alpha' ? 0 : undefined} max={key === 'alpha' ? 0.999999 : undefined} onChange={next => updateVariable(role, index, { [key]: next ?? NaN })} />)}
+          {Object.entries(variable).filter(([key, value]) => typeof value === 'number' && ['low', 'high', 'target', 'max_move'].includes(key)).map(([key, value]) => <ResearchNumber key={key} label={`${variable.name} ${variableLabels[key] || key}`} value={value as number} min={['weight', 'slack_weight', 'max_move', 'weight_r'].includes(key) ? 0.000001 : key === 'alpha' ? 0 : undefined} max={key === 'alpha' ? 0.999999 : undefined} onChange={next => updateVariable(role, index, { [key]: next ?? NaN })} />)}
           <ResearchNumber label={`${variable.name} 硬下限（${variable.unit}；選填）`} required={false} value={variable.hard_low} onChange={hard_low => updateVariable(role, index, { hard_low })} />
           <ResearchNumber label={`${variable.name} 硬上限（${variable.unit}；選填）`} required={false} value={variable.hard_high} onChange={hard_high => updateVariable(role, index, { hard_high })} />
           <ResearchField label={`${variable.name} 精確原始來源欄位（選填）`}><input className={researchControl} value={variable.source_column || ''} onChange={event => updateVariable(role, index, { source_column: event.target.value || undefined })} /></ResearchField>
           <ResearchField label={`${variable.name} 量測契約`}><select className={researchControl} value={variable.measurement_kind || ''} onChange={event => updateVariable(role, index, { measurement_kind: event.target.value ? event.target.value as EngineeringVariable['measurement_kind'] : undefined })}><option value="">未明訂（不可推定為即時量測）</option><option value="fast">快速量測</option><option value="delayed_lab">延遲化驗</option><option value="estimated">估測值</option></select></ResearchField>
           <ResearchNumber label={`${variable.name} 已知量測延遲（秒；選填）`} required={false} value={variable.measurement_delay_seconds} min={0} onChange={measurement_delay_seconds => updateVariable(role, index, { measurement_delay_seconds })} />
         </div>
+        {role === 'cv' && <details className="mt-4"><summary className="cursor-pointer text-sm">品質規格（選填，獨立於操作限與硬限）</summary><p className="my-3 text-sm text-slate-400">留空表示未評估規格合格率；不取代控制器操作界線或 Soft-band。</p><div className="grid gap-3 sm:grid-cols-2"><ResearchNumber label={`${variable.name} 品質規格下限（選填）`} required={false} value={variable.spec_low} onChange={spec_low => updateVariable('cv', index, { spec_low })} /><ResearchNumber label={`${variable.name} 品質規格上限（選填）`} required={false} value={variable.spec_high} onChange={spec_high => updateVariable('cv', index, { spec_high })} /></div></details>}
+        <details className="mt-4"><summary className="cursor-pointer text-sm">進階控制參數 · 權重與軌跡</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">{Object.entries(variable).filter(([key, value]) => typeof value === 'number' && !['low', 'high', 'target', 'max_move', 'spec_low', 'spec_high', 'hard_low', 'hard_high', 'measurement_delay_seconds'].includes(key)).map(([key, value]) => <ResearchNumber key={key} label={`${variable.name} ${variableLabels[key] || key}`} value={value as number} min={['weight', 'slack_weight', 'weight_r'].includes(key) ? 0.000001 : key === 'alpha' ? 0 : undefined} max={key === 'alpha' ? 0.999999 : undefined} onChange={next => updateVariable(role, index, { [key]: next ?? NaN })} />)}</div></details>
         {role === 'cv' && variable.measurement_kind && variable.measurement_kind !== 'fast' && <p className="mt-3 text-xs text-amber-200">此 CV 不是直接快掃描回授。沒有合格估測器與延遲契約時只能保存草稿；不可用 forward-fill 冒充新鮮回授。</p>}
         <details className="mt-3"><summary className="cursor-pointer text-sm text-indigo-300">凍結前精確點位契約 · {variable.node_ids ? '已建立研究映射草稿' : '尚無映射，僅離線研究'}</summary>
           <p className="my-3 text-xs text-slate-400">只保存研究工程對照，不修改 Runtime profile。未輸入的點位保持缺失；已應用 SP 必須與命令 SP 獨立，OP 不當作同座標回授。提供映射後需完整通過後端檢查才能凍結。</p>
@@ -96,8 +111,8 @@ export function ResearchStudy({ study, datasets, capabilities, section, onChange
           </div>
           {variable.node_ids && <button type="button" className={`${researchButton} mt-3`} onClick={() => updateVariable(role, index, { node_ids: undefined })}>移除整組研究映射，改為僅離線研究</button>}
         </details>
-        </fieldset>)}</div></div>)}</div>
-      </details>
+        </fieldset>)}</div>
+      </section>
       <label className="flex items-start gap-3 rounded-lg border border-amber-900 bg-amber-950/20 p-4 text-sm text-amber-100"><input type="checkbox" className="mt-1" checked={study.config.engineering_confirmed === true} onChange={event => updateConfig({ engineering_confirmed: event.target.checked })} /><span>已確認工程單位、目標、操作界線及 MV 最大步幅；MV 歷史是下層 PID 已生效的 SP，不是 PV 或 OP。此確認只允許本機研究，不是現場接管授權。</span></label>
       <details><summary className="cursor-pointer font-medium text-indigo-300">進階 · 控制器、模型適用性與模擬設定</summary><div className="mt-4 space-y-4">{Object.entries(study.config).filter(([key]) => !['variables', 'schema_version', 'id', 'candidates', 'engineering_basis', 'engineering_confirmed', 'process_area', 'plant_source', 'mv_coordinate', 'data_window'].includes(key)).map(([key, value]) => <details key={key} className="rounded-lg border border-slate-700 p-3"><summary className="cursor-pointer text-sm text-indigo-300">{key.replaceAll('_', ' ')}</summary><div className="mt-3"><EngineeringFields path={key} value={value as ResearchValue} onChange={next => updateConfig({ [key]: next, engineering_confirmed: false })} /></div></details>)}</div></details>
       </fieldset>

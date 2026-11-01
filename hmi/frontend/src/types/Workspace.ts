@@ -16,13 +16,13 @@ export const runtimePages: readonly (WorkspacePage & { id: RuntimePage })[] = [
 ];
 
 export const modelingPages: readonly (WorkspacePage & { id: ModelingPage })[] = [
-  { id: 'overview', label: '研究總覽與任務', purpose: '查看產物、工作進度與下一步', showScene: false },
-  { id: 'sources', label: '資料來源與快照', purpose: '匯入 CSV、PostgreSQL 或唯讀採集資料', showScene: false },
-  { id: 'engineering', label: '設備、點位與工程契約', purpose: '確認 CV／MV／DV、單位、限制與設備綁定', showScene: true },
-  { id: 'cleaning', label: '清洗與工況整理', purpose: '預覽規則、檢查差異與保存清洗版本', showScene: false },
-  { id: 'identification', label: '模型辨識與資格', purpose: '辨識動態並檢查模型適用證據', showScene: false },
-  { id: 'tuning', label: 'MPC 設定與自動調參', purpose: '在固定模型與界線內比較控制折衷', showScene: false },
-  { id: 'simulation', label: '閉環模擬與壓力驗證', purpose: '執行原生閉環並觀察新 MV 產生的 CV', showScene: true },
-  { id: 'candidates', label: '比較、候選與送審', purpose: '核對改善、代價及不可變驗證證據', showScene: false },
+  { id: 'overview', label: '方案摘要與任務', purpose: '查看已保存產物、目前缺項與下一可做操作', showScene: false },
+  { id: 'sources', label: '資料匯入', purpose: '匯入 CSV、PostgreSQL 或唯讀採集資料', showScene: false },
+  { id: 'engineering', label: '點位與工程界線', purpose: '選取單一 CV／MV／DV，確認單位、界線與工程契約', showScene: true },
+  { id: 'cleaning', label: '清理與切分', purpose: '預覽規則、工況與訓練／驗證切分，保存清理版本', showScene: false },
+  { id: 'identification', label: '模型辨識與驗證', purpose: '辨識動態、凍結控制模型並檢查資格證據', showScene: false },
+  { id: 'tuning', label: '控制器自動調參', purpose: '固定模型、目標與工程界線，搜尋控制器參數', showScene: false },
+  { id: 'simulation', label: '模擬比較', purpose: '比較閉環試驗，或建立凍結模型工作階段再驗證', showScene: true },
+  { id: 'candidates', label: '候選與送審', purpose: '核對改善、代價及不可變驗證證據', showScene: false },
   { id: 'policy', label: '持續研究政策', purpose: '配置有界研究觸發與停止條件，不授予現場寫入權', showScene: false },
 ];

@@ -4,6 +4,7 @@ import { researchError, researchRequest } from '../lib/research';
 import type { Dataset, ResearchBootstrap, ResearchDraft, ResearchRun, ResearchWorkspaceContext, Study } from '../types/Research';
 import type { ModelingPage } from '../types/Workspace';
 import { ResearchCleaning } from './ResearchCleaning';
+import { ResearchWorkbench } from './ResearchWorkbench';
 import { DigitalTwin } from './DigitalTwin';
 import { DigitalTwinConfigurationEditor } from './DigitalTwinConfigurationEditor';
 import { ResearchImport } from './ResearchImport';
@@ -142,7 +143,7 @@ export function Autoresearch({ section, onSectionChange, sceneVisible = true, ac
   }
   async function saveStudy(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!study || !bootstrap) return;
+    if (!study || !bootstrap || busy) return;
     const issue = validateStudy(study, bootstrap.datasets);
     if (issue) { setError(issue); return; }
     setBusy('save'); setError(''); setNotice('');
@@ -157,7 +158,7 @@ export function Autoresearch({ section, onSectionChange, sceneVisible = true, ac
     } catch (failure) { setError(`研究未儲存：${researchError(failure)}`); } finally { setBusy(''); }
   }
   async function startRun() {
-    if (!savedId) return;
+    if (!savedId || busy || activeRun) return;
     setBusy('start'); setError('');
     try {
       const created = await researchRequest<ResearchRun>('/runs', { study_id: savedId });
@@ -168,7 +169,7 @@ export function Autoresearch({ section, onSectionChange, sceneVisible = true, ac
     finally { setBusy(''); }
   }
   async function cancelRun() {
-    if (!runId) return;
+    if (!runId || busy || currentRun?.status === 'cancel_requested') return;
     setBusy('cancel'); setError(''); setNotice('');
     try { const cancelled = await researchRequest<ResearchRun>(`/runs/${encodeURIComponent(runId)}/cancel`, {}); setRun(cancelled); setRunRevision(value => value + 1); }
     catch (failure) { setError(`取消未確認：${researchError(failure)}`); } finally { setBusy(''); }
@@ -186,12 +187,15 @@ export function Autoresearch({ section, onSectionChange, sceneVisible = true, ac
     finally { setBusy(''); }
   }
   const renderPage = (page: ModelingPage) => visited.has(page) || section === page;
-  return <div className="min-w-0 space-y-3 p-3 sm:p-5">
+  const missing = study && bootstrap ? validateStudy(study, bootstrap.datasets) : null;
+  return <div className="min-w-0 space-y-4 px-3 pb-6 sm:px-5">
+    {bootstrap && study && <ResearchWorkbench section={section} onNavigate={onSectionChange} study={study} datasets={bootstrap.datasets} savedId={savedId} run={currentRun} />}
     <div className="flex flex-wrap items-center gap-3 text-xs"><span className={dirty ? 'text-amber-200' : 'text-slate-400'}>{dirty ? '有未儲存草稿 · 換頁保留' : savedId ? '研究版本已凍結' : '伺服器草稿已保存，尚未凍結資格'}</span><button type="button" className={researchButton} disabled={loading || !!busy} onClick={() => { setLoadRevision(value => value + 1); setRunRevision(value => value + 1); }}>更新資料與任務</button>{study && <button type="button" className={researchButton} disabled={!!busy} onClick={() => void saveDraft()}>{busy === 'draft-save' ? '保存草稿中…' : '保存工程草稿（不要求工程資格）'}</button>}</div>
     {error && <ResearchNotice error={error} />}{notice && <p role="status" className="text-sm text-indigo-200">{notice}</p>}
     {loading && <p role="status" className="text-sm text-slate-400">讀取伺服器能力與產物…</p>}
     {!bootstrap && !loading && <ResearchPanel title="研究服務未就緒"><p>請確認研究能力、登入授權與伺服器設定。上方保留實際錯誤；不以示範資料替代。</p></ResearchPanel>}
     {bootstrap && study && <fieldset disabled={!!busy} className="min-w-0 space-y-3">
+      <details className="identity-panel"><summary>版本與執行紀錄切換 · {savedId || (draftIdentity ? `草稿 r${draftIdentity.revision}` : '研究草稿')} · {runId || '未選 run'}</summary><div className="mt-3 space-y-3">
       <div className="grid min-w-0 gap-3 md:grid-cols-2">
         <ResearchField label="研究版本／保留的草稿"><select className={researchControl} disabled={!!busy} value={selectedStudy} onChange={event => openStudy(event.target.value)}><option value="">新研究草稿{drafts.new ? '（未儲存）' : ''}</option>{bootstrap.studies.map(item => <option key={item.id} value={item.id}>{item.name} · {item.id}{drafts[item.id] ? '（有未儲存草稿）' : ''}</option>)}</select></ResearchField>
         <ResearchField label="執行紀錄（不改研究草稿）"><select className={researchControl} value={runId} onChange={event => { setRunId(event.target.value); setPollError(''); }}><option value="">尚未選取 run</option>{bootstrap.runs.map(item => <option key={item.id} value={item.id}>{item.name || item.id} · {item.status}</option>)}</select></ResearchField>
@@ -205,13 +209,15 @@ export function Autoresearch({ section, onSectionChange, sceneVisible = true, ac
         setStudy(next); setSavedId(''); setSelectedStudy(''); setDraftIdentity({ id: item.id, revision: item.revision }); setDraftSnapshot(JSON.stringify(next));
         onSectionChange('engineering');
       }}><option value="">新的伺服器草稿（不覆寫既有草稿）</option>{serverDrafts.map(item => <option key={item.id} value={item.id}>{item.name} · r{item.revision} · {item.updated_at}</option>)}</select></ResearchField>
+      </div></details>
       {currentRun && currentRun.study_id !== savedId && <p className="text-xs text-amber-200">目前 run 屬於研究 {currentRun.study_id}，不是目前草稿的驗證結果。</p>}
       {pollError && <ResearchNotice error={pollError} />}
       {currentRun?.status === 'cancel_requested' && <p role="status" className="text-sm text-indigo-300">工作 {currentRun.id} 的取消請求已保存，尚未確認停止。</p>}
       {currentRun?.status === 'cancelled' && <p role="status" className="text-sm text-indigo-300">工作 {currentRun.id} 已由伺服器確認取消；保留已完成的試驗，不代表完整驗證通過。</p>}
       <section hidden={section !== 'overview'} aria-label="研究任務">
-        <ResearchPanel title="任務與下一步"><div className="space-y-3">
-          <div className="flex flex-wrap gap-2"><button className={researchButton} onClick={() => { stashDraft(); changeStudy({ ...structuredClone(study), id: '', name: `${study.name}（複本）` }); setSelectedStudy(''); setDraftIdentity(null); setDraftSnapshot(''); onSectionChange('engineering'); }}>複製為新草稿</button><button className={researchPrimary} onClick={() => onSectionChange(!bootstrap.datasets.length ? 'sources' : !study.config.engineering_confirmed ? 'engineering' : 'tuning')}>繼續下一個準備工作</button></div>
+        <ResearchPanel title="目前方案"><div className="space-y-4">
+          <dl className="plan-summary"><div><dt>資料來源</dt><dd>{sourceLabel}</dd></div><div><dt>控制模型</dt><dd>{study.model_id || '未指定凍結模型，可進入辨識工作區'}</dd></div><div><dt>工程界線</dt><dd>{study.config.engineering_confirmed === true ? '已人工確認；變更後須重新確認' : '尚未確認'}</dd></div><div><dt>目前缺項</dt><dd>{missing || '前端工程檢查通過；模型資格與執行結果依伺服器證據確認'}</dd></div></dl>
+          <div className="flex flex-wrap gap-2"><button className={researchButton} onClick={() => { stashDraft(); changeStudy({ ...structuredClone(study), id: '', name: `${study.name}（複本）` }); setSelectedStudy(''); setDraftIdentity(null); setDraftSnapshot(''); onSectionChange('engineering'); }}>複製為新草稿</button><button className={researchPrimary} onClick={() => onSectionChange(!study.dataset_id && study.config.plant_source !== 'independent_synthetic' ? 'sources' : !study.config.engineering_confirmed ? 'engineering' : study.dataset_id && !study.model_id ? 'identification' : 'tuning')}>繼續下一個準備工作</button></div>
           {!bootstrap.runs.length && <p className="text-sm text-slate-400">尚無工作。匯入並清洗資料，或明確使用合成來源，完成工程與調參設定後儲存並啟動。</p>}
           <ul className="space-y-2">{bootstrap.runs.map(item => <li key={item.id} className="rounded border border-slate-700 p-3 text-sm"><div className="flex flex-wrap justify-between gap-2"><span className="break-all">{item.name || item.id} · {item.status} · {item.stage || '階段未記錄'}</span><button className={researchButton} onClick={() => { setRunId(item.id); onSectionChange(item.status === 'completed' ? 'candidates' : 'tuning'); }}>開啟工作</button></div><p>已確認工作 {item.progress?.completed ?? '未知'} / {item.progress?.total ?? '未知'} · {item.created_at}</p>{item.error && <p className="text-rose-200">{item.error}</p>}</li>)}</ul>
           {currentRun && pending(currentRun) && <button className={researchButton} disabled={!!busy || currentRun.status === 'cancel_requested'} onClick={() => void cancelRun()}>{currentRun.status === 'cancel_requested' ? '等待取消確認' : '取消所選工作'}</button>}

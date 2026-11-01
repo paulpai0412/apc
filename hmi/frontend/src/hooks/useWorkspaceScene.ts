@@ -20,7 +20,7 @@ export function useWorkspaceScene(user: string, mode: WorkspaceMode, page: strin
   const mobile = useSyncExternalStore(subscribe, smallScreen, () => true);
   const [preferences, setPreferences] = useState(load);
   const key = JSON.stringify([user, mode, page, mobile ? 'mobile' : 'desktop']);
-  const visible = preferences[key] ?? (!mobile && defaultVisible);
+  const visible = preferences[key] ?? (defaultVisible && (!mobile || (mode === 'runtime' && page === 'overview')));
   function save(next: Record<string, boolean>) {
     setPreferences(next);
     try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* Display-only preference remains in memory. */ }

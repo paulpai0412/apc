@@ -4,6 +4,7 @@ import type { ProcessTrendData, TrendGroup, TrendKind, TrendRange, TrendSeries, 
 import { finitePoint, isTrendBound, nearestTrendTime, parseTrendDomain, trendDomain, trendKindLabels } from '../lib/processTrend';
 import { trendRoleBlocks, trendRoleGeometry } from '../lib/processTrendLayout';
 import { ProcessTrendOverview, ProcessTrendSummary } from './ProcessTrendOverview';
+import { TrendSignalList } from './TrendSignalList';
 
 export type ProcessTrendChartProps = {
   data: ProcessTrendData; storageKey?: string; initialSelected?: string[]; initialView?: 'compare' | 'lanes' | 'overlay' | 'role_blocks';
@@ -27,7 +28,6 @@ const bandKinds = [
 ];
 const control = 'min-w-0 max-w-full rounded border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-slate-100';
 const button = `${control} disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-sky-400`;
-const qualityLabels = { good: '良好', bad: '不良', uncertain: '不確定', unknown: '品質未知', missing: '缺值' };
 const plotQualities = ['good', 'uncertain', 'unknown', 'bad'] as const;
 const valueLabel = (value: number) => value.toLocaleString('zh-TW', { maximumSignificantDigits: 6 });
 const groupId = (series: TrendSeries) => series.groupId ?? 'live';
@@ -103,6 +103,8 @@ export function ProcessTrendChart({ data, storageKey, initialSelected, initialVi
   const [rangeError, setRangeError] = useState('');
   const [startDraft, setStartDraft] = useState('');
   const [endDraft, setEndDraft] = useState('');
+  const [focusedSeries, setFocusedSeries] = useState<string | null>(null);
+  const [hoveredSeries, setHoveredSeries] = useState<string | null>(null);
   const [eventKind, setEventKind] = useState('all');
   const [eventGroup, setEventGroup] = useState('all');
   const [eventPage, setEventPage] = useState(0);
@@ -114,7 +116,7 @@ export function ProcessTrendChart({ data, storageKey, initialSelected, initialVi
   }, []);
   useEffect(() => {
     if (loading) return;
-    setWindowRange(data.range);
+    setWindowRange({ start: data.range.start, end: data.range.end });
     setStartDraft(String((data.range.start - data.originTime) / 1000));
     setEndDraft(String((data.range.end - data.originTime) / 1000));
   }, [data.range.start, data.range.end, data.originTime, loading]);
@@ -194,10 +196,10 @@ export function ProcessTrendChart({ data, storageKey, initialSelected, initialVi
     const result: Record<string, [number, number]> = {};
     for (const variable of data.variables) {
       const shared = axes[variable.id] ?? { mode: 'detail' };
-      result[variable.id] = shared.locked ?? (shared.mode === 'manual' ? shared.manual : undefined) ?? trendDomain(data.series, variable.id, shared.mode === 'all' ? 'all' : 'detail', range);
+      result[variable.id] = shared.locked ?? (shared.mode === 'manual' ? shared.manual : undefined) ?? trendDomain(data.series, variable.id, shared.mode === 'all' ? 'all' : 'detail', { start: range.start, end: range.end });
       for (const group of groups) {
         const key = `${variable.id}|${group.id}`, setting = axes[key] ?? { mode: 'detail' };
-        result[key] = !unlocked.includes(key) ? result[variable.id] : setting.locked ?? (setting.mode === 'manual' ? setting.manual : undefined) ?? trendDomain(data.series.filter(series => groupId(series) === group.id), variable.id, setting.mode === 'all' ? 'all' : 'detail', range);
+        result[key] = !unlocked.includes(key) ? result[variable.id] : setting.locked ?? (setting.mode === 'manual' ? setting.manual : undefined) ?? trendDomain(data.series.filter(series => groupId(series) === group.id), variable.id, setting.mode === 'all' ? 'all' : 'detail', { start: range.start, end: range.end });
       }
     }
     return result;
@@ -214,11 +216,19 @@ export function ProcessTrendChart({ data, storageKey, initialSelected, initialVi
       return [series.id, colors[(Math.max(0, groupIndex) + Math.max(0, variableIndex) + offset + occurrence) % colors.length]];
     }));
   }, [data.series, data.variables, groups]);
+  const focusCandidate = hoveredSeries ?? focusedSeries;
+  const emphasis = data.series.some(series => series.id === focusCandidate && selected.includes(series.variableId) && series.available && enabled(series)) ? focusCandidate : null;
+  const focusSeries = (series: TrendSeries) => {
+    setFocusedSeries(current => current === series.id ? null : series.id);
+    const variable = data.variables.find(item => item.id === series.variableId);
+    if (variable) onVariableFocus?.(variable);
+  };
   const renderedLines = useMemo(() => new Map(data.series.map(series => {
     const plot = plotted.get(series.id)!;
     const label = groups.find(group => group.id === groupId(series))?.label ?? groupId(series);
-    return [series.id, plot.qualities.map(quality => <Line key={`${series.id}:${quality}`} yAxisId={series.variableId} data={plot.points} dataKey={quality} name={`${label} · ${series.label}`} type={series.interpolation === 'step' ? 'stepAfter' : 'linear'} stroke={quality === 'bad' ? '#fb7185' : quality === 'unknown' ? '#94a3b8' : seriesColors[series.id]} strokeWidth={quality === 'good' ? (series.kind === 'actual' ? 2 : series.kind === 'target' ? 1 : 1.5) : 0} strokeDasharray={lineDashes[series.kind]} dot={quality === 'good' ? (plot.points.length === 1 ? { r: 3, strokeWidth: 0 } : false) : { r: quality === 'bad' ? 3 : 2.5, strokeWidth: 1.5, fill: quality === 'uncertain' ? '#0f172a' : quality === 'bad' ? '#fb7185' : '#94a3b8' }} activeDot={false} connectNulls={false} isAnimationActive={false} onClick={() => { const variable = data.variables.find(item => item.id === series.variableId); if (variable) onVariableFocus?.(variable); }} />)];
-  })), [data.series, data.variables, plotted, groups, seriesColors, onVariableFocus]);
+    // Quality markers retain full visibility even when another good curve is emphasized.
+    return [series.id, plot.qualities.map(quality => <Line key={`${series.id}:${quality}`} className={`trend-series${quality === 'good' && emphasis && emphasis !== series.id ? ' is-muted' : ''}`} opacity={quality === 'good' && emphasis && emphasis !== series.id ? 0.18 : 1} yAxisId={series.variableId} data={plot.points} dataKey={quality} name={`${label} · ${series.label}`} type={series.interpolation === 'step' ? 'stepAfter' : 'linear'} stroke={quality === 'bad' ? '#fb7185' : quality === 'unknown' ? '#94a3b8' : seriesColors[series.id]} strokeWidth={quality === 'good' ? (series.kind === 'actual' ? 2 : series.kind === 'target' ? 1 : 1.5) : 0} strokeDasharray={lineDashes[series.kind]} dot={quality === 'good' ? (plot.points.length === 1 ? { r: 3, strokeWidth: 0 } : false) : { r: quality === 'bad' ? 3 : 2.5, strokeWidth: 1.5, fill: quality === 'uncertain' ? '#0f172a' : quality === 'bad' ? '#fb7185' : '#94a3b8' }} activeDot={false} connectNulls={false} isAnimationActive={false} onClick={() => { setFocusedSeries(series.id); const variable = data.variables.find(item => item.id === series.variableId); if (variable) onVariableFocus?.(variable); }} />)];
+  })), [data.series, data.variables, plotted, groups, seriesColors, onVariableFocus, emphasis]);
   const renderedBands = useMemo(() => new Map(bandData.map(band => [band.id, <Area key={band.id} yAxisId={band.variableId} data={band.points} dataKey="value" type="stepAfter" stroke="none" fill={band.color} fillOpacity={0.1} connectNulls={false} isAnimationActive={false} legendType="none" />])), [bandData]);
   const seek = (time: number) => {
     if (!visibleTimes.length) return;
@@ -244,20 +254,6 @@ export function ProcessTrendChart({ data, storageKey, initialSelected, initialVi
   const events = useMemo(() => data.events.filter(event => (eventKind === 'all' || event.kind === eventKind) && (eventGroup === 'all' || (event.groupId ?? 'live') === eventGroup) && (!event.variableId || selected.includes(event.variableId))), [data.events, eventKind, eventGroup, selected]);
   const page = Math.min(eventPage, Math.max(0, Math.ceil(events.length / 12) - 1));
 
-  const linePicker = useCallback((variable: TrendVariable) => {
-    const items = data.series.filter(series => series.variableId === variable.id);
-    return <details className="min-w-0 rounded border border-slate-700 px-2 py-1.5">
-      <summary className="cursor-pointer text-xs text-indigo-300" aria-label={`${variable.name} 逐條選線`}>選線 · 已選 {items.filter(series => series.available && enabled(series)).length}/{items.length} · {variable.unit || '單位未知'}</summary>
-      <fieldset className="mt-2 min-w-0"><legend className="sr-only">{variable.name} 逐條選線</legend>
-      <div className="mb-2 flex flex-wrap gap-2">{([['default', '恢復預設'], [true, '全部線'], [false, '清空']] as const).map(([choice, label]) => <button key={label} type="button" className={`${button} text-xs`} aria-label={`${variable.name} ${label}`} onClick={() => toggleLines(items, choice)}>{label}</button>)}</div>
-      <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3">{groups.filter(group => items.some(series => groupId(series) === group.id)).map(group => <div className="min-w-0" key={group.id}><p className="mb-1 break-words text-xs font-medium text-slate-300">{group.label}</p>{items.filter(series => groupId(series) === group.id).map(series => <label key={series.id} title={`${series.id} · ${series.source || '來源未提供'}`} className={`flex min-w-0 items-start gap-2 py-1 text-xs ${series.available ? 'text-slate-200' : 'text-slate-500'}`}>
-        <input type="checkbox" className="mt-0.5 shrink-0" aria-label={`${variable.name} · ${group.label} · ${trendKindLabels[series.kind]} · ${series.label}`} checked={series.available && enabled(series)} disabled={!series.available} onChange={event => setLines(current => ({ ...current, [series.id]: event.target.checked }))} />
-        <span className="min-w-0 break-words"><span style={{ color: series.available ? seriesColors[series.id] : undefined }}>{trendKindLabels[series.kind]}{series.label !== group.label && ` · ${series.label.startsWith(`${group.label} · `) ? series.label.slice(group.label.length + 3) : series.label}`}</span>{series.leadSeconds !== undefined && ` · 提前 ${series.leadSeconds} 秒`}{series.forecastScope === 'latest' && <small className="block break-all text-slate-400">{series.source}</small>}{!series.available && <span className="block">不可用：{series.unavailableReason || '來源未提供'}</span>}</span>
-      </label>)}</div>)}</div>
-      </fieldset>
-    </details>;
-  }, [data.series, groups, enabled, toggleLines, setLines, seriesColors]);
-  const linePickers = useMemo(() => new Map(variables.map(variable => [variable.id, linePicker(variable)])), [variables, linePicker]);
   const renderPlot = (lane: TrendVariable[], group: TrendGroup | undefined, kind?: 'residual' | 'movement', roleLayout = false, showTimeAxis = true) => {
     const geometry = trendRoleGeometry(lane.length, mobile);
     const candidates = data.series.filter(series => lane.some(variable => variable.id === series.variableId) && (!group || groupId(series) === group.id));
@@ -296,7 +292,7 @@ export function ProcessTrendChart({ data, storageKey, initialSelected, initialVi
         </ComposedChart></ResponsiveContainer>
       </div>
       {!shown.some(series => plotted.get(series.id)?.qualities.length) && <p className="text-xs text-amber-200">{kind === 'movement' ? '沒有已選取的逐步命令變化資料；不從減點曲線推算。' : kind === 'residual' ? '沒有已選取的有效時間配對殘差；不內插或跨組配對。' : '此視窗沒有已選取的可用數值。'}</p>}
-      <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs">{shown.map(series => <li key={series.id} className="max-w-full break-words"><svg className="mr-1 inline-block align-middle" width="24" height="8" aria-hidden="true"><line x1="0" y1="4" x2="24" y2="4" stroke={seriesColors[series.id]} strokeWidth="2" strokeDasharray={lineDashes[series.kind]} /></svg>{group ? '' : `${groupLabel(groupId(series))} · `}{lane.length > 1 && `${lane.find(variable => variable.id === series.variableId)?.name} · `}{series.label} · {trendKindLabels[series.kind]}{series.leadSeconds !== undefined && ` · 提前 ${series.leadSeconds} 秒`}</li>)}</ul>
+
     </div>;
   };
   const renderGroupAxis = (variable: TrendVariable, group: TrendGroup) => {
@@ -340,8 +336,10 @@ export function ProcessTrendChart({ data, storageKey, initialSelected, initialVi
   return <section className="min-w-0 space-y-4 text-slate-200" aria-label="獨立工程尺度趨勢" aria-busy={loading}>
     <div className="flex flex-wrap items-center gap-2"><div className="flex gap-1" role="group" aria-label="趨勢用途"><button type="button" className={button} aria-pressed={!diagnostic} onClick={() => setDiagnostic(false)}>製程比較</button><button type="button" className={button} aria-pressed={diagnostic} onClick={() => setDiagnostic(true)}>預測診斷</button></div><label className="text-xs">排列 <select aria-label="曲線排列" className={control} value={view} onChange={event => setView(event.target.value as View)}><option value="role_blocks">CV／MV／DV 時間對齊區塊</option><option value="compare">同變數分組並排</option><option value="lanes">進階：每變數各組疊圖</option><option value="overlay" disabled={variables.length > 3 || mobile}>進階：至多 3 變數多軸</option></select></label>{loading && <span role="status" className="text-xs text-sky-300">正在載入所選視窗…</span>}</div>
     <p className="text-xs text-slate-400">{diagnostic ? '預測按有效時間與實際值對照；殘差使用獨立零基準軸。游標不改變預測起算時間。' : '預設實際值與目標；MV 顯示命令及可用實際回授。不同變數永不共用尺度，同變數各組預設共軸。'}</p>
-    <fieldset className="flex flex-wrap gap-x-4 gap-y-2"><legend className="mb-2 text-xs">顯示變數</legend>{data.variables.map(variable => <label key={variable.id} className="flex max-w-full items-center gap-2 break-words text-xs"><input type="checkbox" aria-label={`顯示 ${variable.name}`} checked={selected.includes(variable.id)} onChange={event => { setInventory(current => [...new Set([...current, ...data.variables.map(item => item.id)])]); setSelection(event.target.checked ? [...selected, variable.id] : selected.filter(id => id !== variable.id)); }} />{variable.role} · {variable.name} ({variable.unit || '單位未知'})</label>)}</fieldset>
     {onVariableFocus && <div className="flex flex-wrap gap-2" role="group" aria-label="設備變數聚焦">{data.variables.map(variable => <button type="button" key={variable.id} className={`${button} text-xs`} aria-pressed={focusedVariableId === variable.id} onClick={() => onVariableFocus(variable)}>聚焦 {variable.role} · {variable.name}</button>)}</div>}
+    <div className="trend-cursor" aria-label="時間對齊工具">      {visibleTimes.length > 0 && <label className="block text-xs">共用游標 · {hasCursor ? timeLabel(cursorTime) : '未設定'}<input className="mt-2 block w-full accent-sky-400" aria-label="共用時間游標，方向鍵移動一筆，Home 和 End 到起終點" type="range" min={0} max={visibleTimes.length - 1} step={1} value={Math.max(0, visibleTimes.indexOf(nearestTrendTime(visibleTimes, cursorTime)))} onChange={event => seek(visibleTimes[Number(event.target.value)])} /></label>}
+      {onCursorTimeChange && <button type="button" className={`${button} text-xs`} onClick={() => { if (controlledCursor === undefined) setCursor(null); onCursorTimeChange(null); }}>清除共用游標</button>}<p className="text-sm text-slate-400">視窗：{timeLabel(range.start)} → {timeLabel(range.end)}</p></div>
+    <details className="trend-advanced"><summary>時間範圍、完整統計與背景帶</summary><div className="mt-3 space-y-4">
     <ProcessTrendOverview data={data} range={range} cursor={hasCursor ? cursorTime : Number.NaN} timeLabel={timeLabel} onWindowChange={changeWindow} />
     <div className="space-y-2 rounded-lg border border-slate-700 p-3">
       <form className="flex flex-wrap items-end gap-2" onSubmit={event => {
@@ -358,29 +356,35 @@ export function ProcessTrendChart({ data, storageKey, initialSelected, initialVi
         {rangeError && <p role="alert" className="w-full text-xs text-rose-300">{rangeError}</p>}
       </form>
       <p className="break-words text-xs text-slate-400">{timeLabel(range.start)} → {timeLabel(range.end)} · {data.timeBasis === 'relative' ? '相對資料起點' : '本機時區（原始 UTC）'} · 僅改變檢視，不改變評分範圍</p>
-      {visibleTimes.length > 0 && <label className="block text-xs">共用游標 · {hasCursor ? timeLabel(cursorTime) : '未設定'}<input className="mt-2 block w-full accent-sky-400" aria-label="共用時間游標，方向鍵移動一筆，Home 和 End 到起終點" type="range" min={0} max={visibleTimes.length - 1} step={1} value={Math.max(0, visibleTimes.indexOf(nearestTrendTime(visibleTimes, cursorTime)))} onChange={event => seek(visibleTimes[Number(event.target.value)])} /></label>}
-      {onCursorTimeChange && <button type="button" className={`${button} text-xs`} onClick={() => { if (controlledCursor === undefined) setCursor(null); onCursorTimeChange(null); }}>清除共用游標</button>}
+
     </div>
     {loading ? <p role="status" className="text-xs text-slate-400">所選視窗完整解析度統計載入中；不顯示舊視窗統計。</p> : <ProcessTrendSummary data={data} range={range} variables={selected} />}
     <fieldset className="flex flex-wrap gap-x-4 gap-y-2"><legend className="mb-1 text-xs">可選背景帶（與各上下限線獨立；缺少良好配對界線處留空）</legend>{bandKinds.map(band => {
       const available = bandData.some(item => item.band === band.id && selected.includes(item.variableId));
       return <label key={band.id} className="flex items-center gap-2 text-xs" style={{ color: band.color }}><input type="checkbox" checked={available && bands.includes(band.id)} disabled={!available} onChange={event => setBands(current => event.target.checked ? [...current, band.id] : current.filter(id => id !== band.id))} />{band.label}{!available && '（未提供可配對上下界）'}</label>;
     })}</fieldset>
+    </div></details>
+    <div className="trend-explorer">
+      <TrendSignalList pinnedVariableId={focusedVariableId} formatTime={timeLabel} data={data} selected={selected} mobile={mobile} cursorLabel={hasCursor ? timeLabel(cursorTime) : '未設定'} cursorTime={hasCursor ? cursorTime : null} pointIndex={pointIndex} colors={seriesColors} dashes={lineDashes} enabled={enabled} focusedId={focusedSeries} onFocus={focusSeries} onHover={setHoveredSeries} onReset={() => { setFocusedSeries(null); setHoveredSeries(null); }} onDefaults={() => { toggleLines(data.series, 'default'); setFocusedSeries(null); setHoveredSeries(null); }} onVariableLines={(id, choice) => { toggleLines(data.series.filter(series => series.variableId === id), choice); setFocusedSeries(null); setHoveredSeries(null); }} onVariableToggle={(variable, checked) => {
+        setInventory(current => [...new Set([...current, ...data.variables.map(item => item.id)])]);
+        setSelection(checked ? [...selected, variable.id] : selected.filter(id => id !== variable.id));
+        if (!checked && data.series.some(series => series.id === focusedSeries && series.variableId === variable.id)) setFocusedSeries(null);
+        setHoveredSeries(null);
+      }} onSeriesToggle={(id, checked) => { setLines(current => ({ ...current, [id]: checked })); if (!checked && id === focusedSeries) setFocusedSeries(null); setHoveredSeries(null); }} />
+      <div className="trend-plots">
     {view === 'overlay' && !overlay && <p className="text-xs text-amber-200">手機或超過 3 個變數時，改為每變數獨立泳道。</p>}
     {!variables.length && <p role="status" className="text-sm text-amber-200">目前沒有選取變數。</p>}
     {view === 'role_blocks' ? <div className="min-w-0 space-y-3">
       <p className="text-xs text-slate-400">每組由上而下為 CV、MV、DV；時間範圍與游標一致。每個變數使用原始工程單位與獨立 Y 軸，並非正規化。桌面同角色至多兩變數分列左右軸，更多變數或手機使用獨立子泳道。</p>
-      <details className="min-w-0 rounded-lg border border-slate-700 p-3"><summary className="cursor-pointer text-sm text-indigo-300">逐條選線與同變數共用軸設定</summary><div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-2">{variables.map(variable => <div className="min-w-0 space-y-2" key={variable.id}><h4 className="break-words text-xs">{variable.role} · {variable.name}</h4>{linePickers.get(variable.id)}<AxisControls name={`${variable.name} 共用`} setting={axes[variable.id] ?? { mode: 'detail' }} domain={domains[variable.id]} onChange={setting => setAxes(current => ({ ...current, [variable.id]: setting }))} /></div>)}</div></details>
+      <details className="min-w-0 rounded-lg border border-slate-700 p-3"><summary className="cursor-pointer text-sm text-indigo-300">工程尺度與共用軸設定</summary><div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-2">{variables.map(variable => <div className="min-w-0 space-y-2" key={variable.id}><h4 className="break-words text-xs">{variable.role} · {variable.name}</h4><AxisControls name={`${variable.name} 共用`} setting={axes[variable.id] ?? { mode: 'detail' }} domain={domains[variable.id]} onChange={setting => setAxes(current => ({ ...current, [variable.id]: setting }))} /></div>)}</div></details>
       <div className={`grid min-w-0 gap-3 ${groups.length > 1 ? 'md:grid-cols-2' : ''}`}>{groups.length ? groups.map(group => renderRoleStack(group)) : renderRoleStack()}</div>
-    </div> : overlay ? <div className="space-y-3 rounded-lg border border-slate-700 p-3">{variables.map(variable => <div className="space-y-2" key={variable.id}>{linePickers.get(variable.id)}<AxisControls name={variable.name} setting={axes[variable.id] ?? { mode: 'detail' }} domain={domains[variable.id]} onChange={setting => setAxes(current => ({ ...current, [variable.id]: setting }))} /></div>)}{renderPanels(variables)}</div> : variables.map(variable => <section key={variable.id} className="min-w-0 space-y-3 rounded-lg border border-slate-700 p-3" aria-label={`${variable.name} 比較列`}>
-      <div className="flex min-w-0 flex-wrap items-start gap-2"><h3 className="mr-auto break-words py-1 text-sm font-semibold">{variable.role} · {variable.name} · {variable.unit || '單位未知'}</h3><div className="min-w-0 max-w-full">{linePickers.get(variable.id)}</div></div>
+    </div> : overlay ? <div className="space-y-3 rounded-lg border border-slate-700 p-3">{variables.map(variable => <div className="space-y-2" key={variable.id}><AxisControls name={variable.name} setting={axes[variable.id] ?? { mode: 'detail' }} domain={domains[variable.id]} onChange={setting => setAxes(current => ({ ...current, [variable.id]: setting }))} /></div>)}{renderPanels(variables)}</div> : variables.map(variable => <section key={variable.id} className="min-w-0 space-y-3 rounded-lg border border-slate-700 p-3" aria-label={`${variable.name} 比較列`}>
+      <div className="flex min-w-0 flex-wrap items-start gap-2"><h3 className="mr-auto break-words py-1 text-sm font-semibold">{variable.role} · {variable.name} · {variable.unit || '單位未知'}</h3></div>
       <details><summary className="cursor-pointer text-xs text-indigo-300">同變數共用 Y 軸 · {valueLabel(domains[variable.id][0])} → {valueLabel(domains[variable.id][1])} · 調整／鎖定</summary><div className="mt-2"><AxisControls name={`${variable.name} 共用`} setting={axes[variable.id] ?? { mode: 'detail' }} domain={domains[variable.id]} onChange={setting => setAxes(current => ({ ...current, [variable.id]: setting }))} /></div></details>
       {renderPanels([variable])}
     </section>)}
-    <details className="rounded-lg border border-slate-700 p-3"><summary className="cursor-pointer text-sm">共用游標讀值 · {hasCursor ? timeLabel(cursorTime) : '未設定'}</summary><p className="my-2 text-xs text-slate-400">只讀取完全相同有效時間的原始記錄，不內插缺值。不良＝紅點、不確定＝空心點、未知＝灰點；缺值不連線。</p><div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3">{data.series.filter(series => selected.includes(series.variableId) && enabled(series)).map(series => {
-      const point = hasCursor ? pointIndex.get(series.id)?.get(cursorTime) : undefined, variable = data.variables.find(item => item.id === series.variableId);
-      return <div key={series.id} className="min-w-0 break-words rounded bg-slate-900 p-2 text-xs"><p style={{ color: seriesColors[series.id] }}>{variable?.name} · {groupLabel(groupId(series))} · {series.label} · {trendKindLabels[series.kind]}</p><p className="mt-1 font-mono">{series.available && point && finitePoint(point) ? `${valueLabel(point.value!)} ${variable?.unit || '單位未知'} · ${qualityLabels[point.quality]}` : '此時無可用記錄'}</p>{point?.issuedAt !== undefined && <p className="mt-1 text-slate-400">發佈：{timeLabel(point.issuedAt)}<br />有效：{timeLabel(point.time)}</p>}<p className="mt-1 break-all text-slate-500">{series.source}</p></div>;
-    })}</div></details>
+      </div>
+    </div>
     <details className="rounded-lg border border-slate-700 p-3"><summary className="cursor-pointer text-sm">事件定位 · {data.events.length.toLocaleString()} 筆</summary><div className="mt-3 flex flex-wrap items-center gap-2"><label className="text-xs">事件 <select aria-label="事件類型篩選" className={control} value={eventKind} onChange={event => { setEventKind(event.target.value); setEventPage(0); }}><option value="all">全部</option>{Object.entries(eventKinds).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</select></label><label className="text-xs">組別／來源 <select aria-label="事件組別篩選" className={control} value={eventGroup} onChange={event => { setEventGroup(event.target.value); setEventPage(0); }}><option value="all">全部組別</option>{groups.map(group => <option key={group.id} value={group.id}>{group.label}</option>)}</select></label><span className="text-xs text-slate-400">只列已選變數；點選後聚焦同一個 6h 視窗。</span></div><div className="my-2 space-y-2">{events.slice(page * 12, page * 12 + 12).map((event, index) => <button key={`${event.time}:${event.groupId}:${index}`} type="button" className={`${button} block w-full whitespace-normal break-words text-left text-xs`} onClick={() => { setCursor(event.time); onCursorChange?.(event.time); focusWindow(event.time, 6); }}>{timeLabel(event.time)} · {eventKinds[event.kind]} · {groupLabel(event.groupId ?? 'live')} · {data.variables.find(variable => variable.id === event.variableId)?.name ?? '共用'} · {event.label}</button>)}</div>{!events.length && <p className="text-xs text-slate-400">此篩選沒有事件記錄。</p>}<div className="flex items-center gap-2"><button type="button" className={button} disabled={page === 0} onClick={() => setEventPage(page - 1)}>上一頁</button><span className="text-xs">{page + 1} / {Math.max(1, Math.ceil(events.length / 12))}</span><button type="button" className={button} disabled={(page + 1) * 12 >= events.length} onClick={() => setEventPage(page + 1)}>下一頁</button></div></details>
     <details className="text-xs text-slate-400"><summary className="cursor-pointer">來源、品質與資料狀態{data.warnings.length ? ` · ${data.warnings.length} 則提示` : ''}</summary><div className="mt-2 space-y-2 break-words"><p>{data.provenance || '來源未提供'} · 原始 {data.rawSamples.toLocaleString()} 筆／顯示 {data.displaySamples.toLocaleString()} 筆。</p><p>品質規格、操作限制、軟帶與有效量程不同；只填色來源實際提供的良好上下界，不補造缺少的限制。陰影不是信賴區間。預測／殘差不混用起算時間與有效時間。曲線僅供顯示，不寫入控制器。</p>{data.warnings.map((warning, index) => <p className="text-amber-200" key={index}>{warning}</p>)}</div></details>
   </section>;

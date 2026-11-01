@@ -17,6 +17,8 @@ export type DigitalTwinSceneProps = {
   motion: EquipmentMotion;
   source: 'simulation' | 'archive' | 'live';
   visible?: boolean;
+  compact?: boolean;
+  sourceLabel?: string;
 };
 
 const numberFormat = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 6 });
@@ -51,13 +53,14 @@ class WebGLBoundary extends Component<{ children: ReactNode; onFailure: (message
 }
 
 /** Presentation only. The owning board supplies a coherent, already accepted source/frame. */
-export default function DigitalTwinScene({ view, points, selectedEquipmentId, selectedBindingId, onSelectEquipment, onSelectBinding, motion, source, visible: expanded = true }: DigitalTwinSceneProps) {
+export default function DigitalTwinScene({ view, points, selectedEquipmentId, selectedBindingId, onSelectEquipment, onSelectBinding, motion, source, visible: expanded = true, compact = false, sourceLabel }: DigitalTwinSceneProps) {
   const documentVisible = useSyncExternalStore(subscribeVisibility, getVisible, serverVisible);
   const visible = expanded && documentVisible;
   const reducedMotion = useSyncExternalStore(subscribeReducedMotion, getReducedMotion, serverReducedMotion);
   const [animationEnabled, setAnimationEnabled] = useState(true);
   const [particles, setParticles] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
+  const [allEquipmentLabels, setAllEquipmentLabels] = useState(!compact);
   const [failure, setFailure] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const labels = useRef(new Map<string, HTMLButtonElement>());
@@ -99,15 +102,16 @@ export default function DigitalTwinScene({ view, points, selectedEquipmentId, se
   const animated = visible && !reducedMotion && animationEnabled && motion === 'running';
   const sceneMotion = useMemo(() => resolveSceneMotion(view, points, animated), [view, points, animated]);
   const hasAnimation = sceneMotion.rotation.size > 0 || (particles && sceneMotion.flow.size > 0);
-  useEffect(() => { commands.current?.execute('redraw', null); }, [showLabels, visible]);
+  useEffect(() => { commands.current?.execute('redraw', null); }, [showLabels, allEquipmentLabels, visible]);
   const cameraAction = (action: CameraAction) => commands.current?.execute(action, selectedId);
   const error = configError ?? failure;
-  return <section className="twin-scene" aria-label="3D 設備看板">
+  return <section className={`twin-scene${compact ? ' twin-scene--overview' : ''}`} aria-label="3D 設備看板">
     <header className="twin-scene-header">
-      <div><strong>{view.label}</strong><span>{sourceNames[source]} · {motionNames[motion]}{!expanded ? ' · 3D 已收合（相機保留）' : ''}</span></div>
+      <div><strong>{view.label}</strong><span>{sourceLabel ?? sourceNames[source]} · {motionNames[motion]}{!expanded ? ' · 3D 已收合（相機保留）' : ''}</span></div>
       <span className="twin-scene-status">{view.confirmed ? '已確認設備配置' : '未確認拓樸 · 未綁定範本不是工廠模型'}</span>
     </header>
     <div hidden={!expanded}>
+    <details className="twin-scene-display" open={!compact}><summary>相機與顯示設定</summary>
     <div className="twin-scene-toolbar" role="group" aria-label="3D 相機控制">
       <button type="button" onClick={() => cameraAction('home')} disabled={!!error}>重設／全廠</button>
       <button type="button" onClick={() => cameraAction('focus')} disabled={!!error || !selectedItem}>聚焦所選設備</button>
@@ -118,10 +122,12 @@ export default function DigitalTwinScene({ view, points, selectedEquipmentId, se
       <button type="button" onClick={() => cameraAction('zoom-in')} disabled={!!error} aria-label="放大">+</button>
       <button type="button" onClick={() => cameraAction('zoom-out')} disabled={!!error} aria-label="縮小">−</button>
       <label><input type="checkbox" checked={showLabels} onChange={event => setShowLabels(event.target.checked)} /> 點位標籤</label>
+      {compact && <label><input type="checkbox" checked={allEquipmentLabels} onChange={event => setAllEquipmentLabels(event.target.checked)} /> 全部設備標籤</label>}
       <label><input type="checkbox" checked={animationEnabled && !reducedMotion} disabled={reducedMotion} onChange={event => setAnimationEnabled(event.target.checked)} /> 設備動畫</label>
       <label><input type="checkbox" checked={particles} onChange={event => setParticles(event.target.checked)} /> 流向粒子</label>
     </div>
     <p id={helpId} className="twin-scene-help">拖曳環繞、右鍵拖曳平移、滾輪／雙指縮放。鍵盤：方向鍵環繞、Shift＋方向鍵平移、＋／− 縮放、Home 重設、F 聚焦。選取不寫入設備。</p>
+    </details>
     <div className="twin-scene-viewport" tabIndex={0} role="group" aria-label="互動 3D 設備視窗" aria-describedby={helpId} onKeyDown={event => {
       if (event.target !== event.currentTarget) return;
       const keys: Record<string, CameraAction> = { ArrowLeft: event.shiftKey ? 'pan-left' : 'left', ArrowRight: event.shiftKey ? 'pan-right' : 'right', ArrowUp: event.shiftKey ? 'pan-up' : 'up', ArrowDown: event.shiftKey ? 'pan-down' : 'down', '+': 'zoom-in', '=': 'zoom-in', '-': 'zoom-out', Home: 'home', f: 'focus', F: 'focus' };
@@ -134,13 +140,13 @@ export default function DigitalTwinScene({ view, points, selectedEquipmentId, se
         </Canvas>
       </WebGLBoundary>}
       {!error && showLabels && <div className="twin-scene-labels" aria-hidden="true">
-        {view.equipment.map(item => {
+        {view.equipment.filter(item => !compact || allEquipmentLabels || item.id === selectedId).map(item => {
           const bindings = bindingsByEquipment.get(item.id) ?? [];
           const binding = bindings.find(value => value.id === selectedBindingId) ?? bindings[0];
           const point = binding ? pointMap.get(binding.id) : undefined;
           return <button key={item.id} type="button" tabIndex={-1} className={`twin-scene-label${selectedId === item.id ? ' is-selected' : ''}`} ref={element => { if (element) labels.current.set(item.id, element); else labels.current.delete(item.id); }} onClick={() => onSelectEquipment(item.id)}>
             <strong>{item.name}</strong>
-            {binding ? <><span>{binding.role.toUpperCase()} · {binding.variable_name}</span><span>{point?.value !== null && point?.value !== undefined && Number.isFinite(point.value) ? numberFormat.format(point.value) : '—'} {binding.unit}</span><small>{qualityNames[point?.quality ?? 'missing']}{point?.stale ? ' · 過期' : ''} · {binding.channel}</small></> : <small>未綁定／未建模 · 靜止</small>}
+            {compact && selectedId !== item.id ? null : binding ? <><span>{binding.role.toUpperCase()} · {binding.variable_name}</span><span>{point?.value !== null && point?.value !== undefined && Number.isFinite(point.value) ? numberFormat.format(point.value) : '—'} {binding.unit}</span><small>{qualityNames[point?.quality ?? 'missing']}{point?.stale ? ' · 過期' : ''} · {binding.channel}</small></> : <small>未綁定／未建模 · 靜止</small>}
             {bindings.length > 1 && <small>另有 {bindings.length - 1} 點位</small>}
           </button>;
         })}
@@ -156,6 +162,7 @@ export default function DigitalTwinScene({ view, points, selectedEquipmentId, se
       </select>
       <span>{view.equipment.length} 設備 · {view.connections.length} 連線</span>
     </div>
+    <details className="twin-scene-point-details" open={!compact}><summary>設備綁定與來源 · {selectedItem?.name ?? '尚未選取設備'}</summary>
     <div className="twin-scene-points" aria-label="所選設備點位">
       <h4>{selectedItem ? `${selectedItem.name} — 綁定點位` : '選擇設備以檢查點位'}</h4>
       {selectedItem && selectedBindings.length === 0 && <p>未綁定／未建模；不推測量測值、運轉狀態或動畫。</p>}
@@ -171,6 +178,7 @@ export default function DigitalTwinScene({ view, points, selectedEquipmentId, se
         </button>;
       })}
     </div>
-    <p className="twin-scene-help">幾何僅為設備示意，不是製程物理。動畫使用數值／參考量比例，旋轉限制 ±2 rad/s、流動限制 ±0.24 路徑/s，不能當作實際轉速或輸送時間。未綁定、無效或過期輸入保持未知／靜止；多個旋轉來源不明確時保持靜止。不內插或製造量測值。</p>
+    </details>
+    <details className="twin-scene-explanation" open={!compact}><summary>3D 示意與動態限制</summary><p className="twin-scene-help">幾何僅為設備示意，不是製程物理。動畫使用數值／參考量比例，旋轉限制 ±2 rad/s、流動限制 ±0.24 路徑/s，不能當作實際轉速或輸送時間。未綁定、無效或過期輸入保持未知／靜止；多個旋轉來源不明確時保持靜止。不內插或製造量測值。</p></details>
   </section>;
 }

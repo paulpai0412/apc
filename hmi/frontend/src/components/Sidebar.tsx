@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Activity, Menu, X } from 'lucide-react';
+import { Activity, FlaskConical, Menu, X } from 'lucide-react';
 import type { WorkspaceMode, WorkspacePage } from '../types/Workspace';
 
 interface SidebarProps {
@@ -7,13 +7,16 @@ interface SidebarProps {
   pages: readonly WorkspacePage[];
   activePage: string;
   onSelect: (page: string) => void;
+  onModeChange: (mode: WorkspaceMode) => void;
+  runtimeEnabled: boolean;
+  researchEnabled: boolean;
   username: string;
   role: string;
   onChangePassword: () => void;
   onLogout: () => void;
 }
 
-export function Sidebar({ mode, pages, activePage, onSelect, username, role, onChangePassword, onLogout }: SidebarProps) {
+export function Sidebar({ mode, pages, activePage, onSelect, onModeChange, runtimeEnabled, researchEnabled, username, role, onChangePassword, onLogout }: SidebarProps) {
   const drawer = useRef<HTMLDialogElement>(null);
   const opener = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -26,9 +29,13 @@ export function Sidebar({ mode, pages, activePage, onSelect, username, role, onC
   function select(page: string) { onSelect(page); close(); }
   const contents = <>
     <div className="flex items-center gap-3 border-b border-slate-800 px-4 py-4"><Activity size={22} className="text-indigo-400" /><span className="text-lg font-bold">AuTHRity</span><span className="ml-auto text-xs text-slate-400">水泥磨</span></div>
-    <div className="px-4 pb-2 pt-4 text-xs font-semibold text-slate-400">{mode === 'runtime' ? 'RUNTIME · 現場運行' : 'MODELING · 隔離建模'}</div>
+    <nav className="workspace-entries" aria-label="主入口">
+      <button type="button" aria-pressed={mode === 'modeling'} disabled={!researchEnabled} onClick={() => { onModeChange('modeling'); close(); }}><FlaskConical size={20} /><span>建立方案</span></button>
+      <button type="button" aria-pressed={mode === 'runtime'} disabled={!runtimeEnabled} onClick={() => { onModeChange('runtime'); close(); }}><Activity size={20} /><span>運行監控</span></button>
+    </nav>
+    <div className="px-4 pb-2 pt-4 text-sm font-semibold text-slate-400">{mode === 'runtime' ? '運行功能' : '方案管理'}</div>
     <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-4" aria-label={mode === 'runtime' ? 'Runtime 功能頁面' : '建模功能頁面'}>
-      {pages.map((page, index) => <button type="button" key={page.id} aria-current={activePage === page.id ? 'page' : undefined} onClick={() => select(page.id)} className={`flex w-full items-start gap-2 rounded-lg border px-3 py-3 text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400 ${activePage === page.id ? 'border-indigo-700 bg-indigo-950/60 text-indigo-100' : 'border-transparent text-slate-300 hover:border-slate-700 hover:bg-slate-800'}`}><span className="mt-0.5 w-5 shrink-0 text-xs text-slate-500">{mode === 'runtime' ? 'R' : 'M'}{index + 1}</span><span>{page.label}</span></button>)}
+      {pages.filter(page => mode === 'runtime' || ['overview', 'policy'].includes(page.id)).map(page => <button type="button" key={page.id} aria-current={activePage === page.id ? 'page' : undefined} onClick={() => select(page.id)} className={`flex w-full items-start gap-2 rounded border px-3 py-3 text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400 ${activePage === page.id ? 'border-indigo-700 bg-indigo-950/60 text-indigo-100' : 'border-transparent text-slate-300 hover:border-slate-700 hover:bg-slate-800'}`}><span>{page.label}</span></button>)}
     </nav>
     <footer className="space-y-3 border-t border-slate-800 p-4 text-xs">
       <div className="flex items-center justify-between gap-2"><span className="truncate text-slate-200">{username}</span><span className="text-indigo-300">{role}</span></div>
