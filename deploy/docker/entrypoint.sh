@@ -2,6 +2,10 @@
 set -eu
 umask 077
 mkdir -p /data/config /data/research /data/reports /data/pki
+# Avoid seeding the repository's default localhost service inventory/credentials.
+if [ ! -e /data/config/hosts.json ]; then
+    printf '%s\n' '{"supervisors":[],"opc_servers":[],"username_secrets":{}}' > /data/config/hosts.json
+fi
 rm -f /tmp/apc-com-ready
 # Re-register this image's DLL in this service's dedicated, persisted prefix.
 # A failed real COM acceptance must prevent the HMI from claiming readiness.

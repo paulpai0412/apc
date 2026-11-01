@@ -22,12 +22,15 @@ COPY apc_engine/tests/ apc_engine/tests/
 # Separate targets, since this repository deliberately has no Cargo workspace.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/src/hmi/target \
+    --mount=type=cache,target=/src/apc_engine/target \
     --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export CARGO_HTTP_CAINFO=/run/secrets/proxy_ca; fi; \
     cargo test --locked --manifest-path hmi/Cargo.toml && \
     cargo test --locked --manifest-path apc_engine/Cargo.toml && \
     cargo build --locked --release --manifest-path hmi/Cargo.toml && \
-    cargo build --locked --release --manifest-path apc_engine/Cargo.toml --bin mpc_campaign
+    cargo build --locked --release --manifest-path apc_engine/Cargo.toml --bin mpc_campaign && \
+    mkdir /out && cp hmi/target/release/authrity-hmi apc_engine/target/release/mpc_campaign /out/ && strip /out/*
 
 FROM debian:bookworm-slim AS com-build
 RUN apt-get update && apt-get install -y --no-install-recommends make g++-mingw-w64-x86-64-posix && rm -rf /var/lib/apt/lists/*
@@ -58,8 +61,8 @@ RUN --mount=type=secret,id=proxy_ca \
     mkdir /tmp/hangover && tar -xf /tmp/hangover.tar -C /tmp/hangover && \
     apt-get update && apt-get install -y --no-install-recommends /tmp/hangover/*.deb && \
     rm -rf /tmp/hangover /tmp/hangover.tar /var/lib/apt/lists/*
-COPY --from=native /src/hmi/target/release/authrity-hmi /app/bin/authrity-hmi
-COPY --from=native /src/apc_engine/target/release/mpc_campaign /app/bin/mpc_campaign
+COPY --from=native /out/authrity-hmi /app/bin/authrity-hmi
+COPY --from=native /out/mpc_campaign /app/bin/mpc_campaign
 COPY --from=frontend /src/hmi/frontend/dist/ /app/frontend/dist/
 COPY --from=com-build /src/opc_da_simulator/build/ /app/com/
 COPY validation/*.py /app/validation/
