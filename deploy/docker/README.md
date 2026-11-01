@@ -44,7 +44,13 @@ docker compose -f deploy/docker/compose.yaml up -d --no-build --wait --wait-time
 docker compose -f deploy/docker/compose.yaml ps
 ```
 
-Only host loopback `127.0.0.1:18082` is bound. The Compose network is internal;
+Only host loopback `127.0.0.1:18082` is bound. Compose runs two services from the
+**same image and digest**, not two app versions: HMI stays on an internal network;
+a tiny fixed-destination TCP gateway publishes loopback ingress and relays to
+`hmi:3000`. Docker does not publish ports for an internal-only endpoint, which is
+why the gateway has its own ingress bridge. It has no data volume or configurable
+upstream, does not interpret HTTP, and preserves WebSocket and auth headers.
+The HMI itself has no external network;
 there is no external OPC, historian, supervisor, plant simulator or controller
 host. Real device controls have no configured profiles, OPC is disabled and the
 HMI's research-mode Runtime installation/control gate remains in force. There is
@@ -91,7 +97,8 @@ container UID/GID 10001. It contains authentication/audit SQLite data, Runtime
 registries, research datasets/studies/runs, reports and the dedicated Wine prefix.
 The container runs as this non-root user with no capabilities and no-new-privileges.
 Its root filesystem is read-only; only the data volume and bounded `/tmp` tmpfs
-are writable. Resource limits are 6 GiB RAM / 2 CPUs / 512 processes. No Docker
+are writable. HMI resource limits are 6 GiB RAM / 2 CPUs / 512 processes; the stateless gateway
+is limited to 128 MiB / 0.25 CPU / 64 processes. No Docker
 socket or host directories are mounted.
 
 Readiness requires the real simulator's COM tests to have passed on this start
