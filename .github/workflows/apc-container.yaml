@@ -1,0 +1,91 @@
+name: APC ARM64 container
+on:
+  push:
+    branches: [main, work]
+    paths: [Dockerfile, .dockerignore, 'deploy/**', 'hmi/**', 'apc_engine/**', 'validation/**', 'opc_da_simulator/**', '.github/workflows/apc-container.yaml']
+  pull_request:
+    paths: [Dockerfile, .dockerignore, 'deploy/**', 'hmi/**', 'apc_engine/**', 'validation/**', 'opc_da_simulator/**', '.github/workflows/apc-container.yaml']
+permissions:
+  contents: read
+concurrency:
+  group: apc-container-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build and run native test suites
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          platforms: linux/arm64
+          tags: apc:acceptance
+          build-args: SOURCE_REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Real HMI and isolated COM smoke
+        run: deploy/docker/smoke.sh apc:acceptance
+      - name: Install pinned browser test tool (runner only)
+        run: |
+          npm install --prefix "$RUNNER_TEMP/apc-browser" --ignore-scripts --no-audit --no-fund playwright@1.64.1
+          "$RUNNER_TEMP/apc-browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Actual desktop and mobile browser login
+        env:
+          APC_IMAGE: apc:acceptance
+        run: |
+          cleanup() {
+            docker compose -p apc-browser -f deploy/docker/compose.yaml logs > container-evidence/browser-container.log 2>&1 || true
+            docker compose -p apc-browser -f deploy/docker/compose.yaml down -v || true
+          }
+          trap cleanup EXIT
+          docker compose -p apc-browser -f deploy/docker/compose.yaml up -d --no-build --wait --wait-timeout 300
+          docker compose -p apc-browser -f deploy/docker/compose.yaml port gateway 3000
+          curl --fail --silent --show-error http://127.0.0.1:18082/api/auth/me
+          APC_PLAYWRIGHT_MODULE="$RUNNER_TEMP/apc-browser/node_modules/playwright/index.mjs" node deploy/tests/browser-smoke.mjs
+      - name: Authenticate to GHCR using this job's token
+        if: github.event_name == 'push'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish only after acceptance
+        if: github.event_name == 'push'
+        id: publish
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64
+          tags: ghcr.io/paulpai0412/apc:sha-${{ github.sha }}
+          build-args: SOURCE_REVISION=${{ github.sha }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true
+      - name: Verify immutable pull and write deployment contract
+        if: github.event_name == 'push'
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          SOURCE_REVISION: ${{ github.sha }}
+          CI_RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          image="ghcr.io/paulpai0412/apc@$DIGEST"
+          docker pull "$image"
+          deploy/docker/smoke.sh "$image"
+          python3 deploy/docker/image-contract.py > image-contract.json
+      - name: Upload evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: apc-arm64-${{ github.sha }}
+          path: |
+            image-contract.json
+            container-evidence/
+          if-no-files-found: warn

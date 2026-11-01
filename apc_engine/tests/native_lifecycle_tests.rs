@@ -315,7 +315,8 @@ fn forecast_and_native_status_share_exact_solve_identity() {
     let sequence=forecast.sequence()+1;
     let payload:serde_json::Value=serde_json::from_str(forecast.encode(issued,clarabel::solver::SolverStatus::Solved,
         &vec![50.0;model.tuning.prediction_horizon],&[50.0],&vec![0.0;model.tuning.control_horizon]).unwrap()).unwrap();
-    native.forecast_sequence(sequence);
+    native.forecast_sequence(sequence,issued);
+    assert_eq!(native.status().forecast_issued_at,Some(issued));
     assert_eq!(payload["issued_at"].as_str(),native.status().observed_at.as_deref());
     assert_eq!(payload["sequence"].as_u64(),native.status().forecast_sequence);
     assert_eq!(payload["instance_id"],native.status().instance_id);
