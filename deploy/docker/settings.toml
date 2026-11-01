@@ -1,0 +1,53 @@
+[opcua]
+endpoint_url = "opc.tcp://127.0.0.1:9"
+security_policy = "Basic256Sha256"
+message_mode = "SignAndEncrypt"
+namespace_index = 2
+[identity]
+app_name = "APC isolated research"
+app_uri = "urn:authrity:isolated-research"
+auto_create_keys = false
+trust_server_certs = false
+[auth]
+mode = "x509"
+[runtime]
+model_path = "/data/config/model.json"
+reconnect_delay_sec = 5
+connect_opcua = false
+[services]
+supervisor_url = "http://127.0.0.1:9"
+supervisor_api_key = ""
+opc_hot_reload_url = "http://127.0.0.1:9"
+[paths]
+pki_dir = "/data/pki"
+cert_path = "/data/pki/own/cert.der"
+key_path = "/data/pki/own/private.pem"
+[historian]
+enabled = false
+host = "127.0.0.1"
+ilp_port = 9
+http_port = 9
+rest_port = 9
+table_name = "process_data"
+batch_size = 100
+flush_interval_ms = 1000
+snapshot_interval_sec = 60
+[hmi_auth]
+database_url = "sqlite:/data/config/hmi.db"
+session_inactivity_minutes = 60
+[reports]
+directory = "/data/reports"
+[web]
+bind_address = "0.0.0.0:3000"
+assets_directory = "/app/frontend/dist"
+local_test_mode = false
+[research]
+enabled = true
+directory = "/data/research"
+python = "/usr/bin/python3"
+script = "/app/validation/research.py"
+binary = "/app/bin/mpc_campaign"
+bridge = "/usr/bin/wine"
+bridge_args = ["/app/com/opc_da_bridge.exe"]
+command_timeout_seconds = 120
+native_timeout_seconds = 3600
