@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 const { chromium } = await import(pathToFileURL(process.env.APC_PLAYWRIGHT_MODULE).href);
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, args: ['--host-resolver-rules=MAP localhost 127.0.0.1'] });
 const password = randomBytes(24).toString('base64url');
 const checks = [];
 await mkdir('container-evidence', { recursive: true });

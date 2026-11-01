@@ -46,6 +46,8 @@ jobs:
           }
           trap cleanup EXIT
           docker compose -p apc-browser -f deploy/docker/compose.yaml up -d --no-build --wait --wait-timeout 300
+          docker compose -p apc-browser -f deploy/docker/compose.yaml port hmi 3000
+          curl --fail --silent --show-error http://127.0.0.1:18082/api/auth/me
           APC_PLAYWRIGHT_MODULE="$RUNNER_TEMP/apc-browser/node_modules/playwright/index.mjs" node deploy/tests/browser-smoke.mjs
       - name: Authenticate to GHCR using this job's token
         if: github.event_name == 'push'
