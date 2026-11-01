@@ -23,7 +23,8 @@ export function TrendSignalList({ pinnedVariableId, data, selected, mobile, curs
     <div className="trend-signal-tools"><button type="button" onClick={onReset}>恢復全部線強調</button><button type="button" onClick={onDefaults}>恢復預設選線</button></div>
     <p role="status" className="text-sm text-indigo-200">{focused ? `聚焦：${data.variables.find(variable => variable.id === focused.variableId)?.name} · ${trendKindLabels[focused.kind]}` : '全部線正常強調'}</p>
     <p className="trend-reading-time">同時間值 · {cursorLabel}</p>
-    <p className="text-sm text-slate-400">只讀完全相同時間的記錄；缺值不內插。選線可聚焦，其餘淡化。</p>
+    <p className="text-sm text-slate-400">只讀完全相同時間的記錄；缺值不內插。選線可聚焦，其餘良好曲線淡化。</p>
+    <p className="text-sm text-slate-400">不良＝紅點、不確定＝空心點、品質未知＝灰點；缺值不連線，異常標記不淡化。</p>
     {(['CV', 'MV', 'DV', 'OTHER'] as const).filter(role => data.variables.some(variable => variable.role === role)).map(role => <section key={role} aria-label={`${role} 訊號清單`} className="trend-signal-role"><h3>{role}</h3>
       {data.variables.filter(variable => variable.role === role).map(variable => <fieldset key={variable.id} className="trend-signal-variable"><legend><label><input type="checkbox" aria-label={`顯示 ${variable.name}`} disabled={variable.id === pinnedVariableId} checked={selected.includes(variable.id)} onChange={event => onVariableToggle(variable, event.target.checked)} />{variable.name} <span>({variable.unit || '單位未知'})</span></label>{variable.id === pinnedVariableId && <span className="text-sm text-indigo-200">與所選設備點位同步；仍可逐條選線</span>}</legend>
         <details className="text-sm"><summary>此變數選線操作</summary><div className="trend-signal-tools">{([['default', '恢復預設'], [true, '全部線'], [false, '清空']] as const).map(([choice, label]) => <button key={label} type="button" disabled={!selected.includes(variable.id)} aria-label={`${variable.name} ${label}`} onClick={() => onVariableLines(variable.id, choice)}>{label}</button>)}</div></details>
