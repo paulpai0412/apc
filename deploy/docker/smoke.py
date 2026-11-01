@@ -47,7 +47,7 @@ csrf = login['csrf_token']
 if not password_file.exists():
     assert login['force_password_change'] is True
     password = secrets.token_urlsafe(32)
-    request('/api/auth/change-password', {'current_password': 'password', 'new_password': password})
+    request('/api/auth/change-password', {'current_password': 'password', 'new_password': password}, expected=204)
     password_file.write_text(password)
     password_file.chmod(0o600)
 else:
